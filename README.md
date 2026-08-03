@@ -82,7 +82,7 @@ npm run install:all
 npm test
 ```
 
-`npm test` 会先用 CMake 和 Clang 生成独立测试夹具，再检查后端、VS Code 扩展和网页工作台。测试不依赖开发者电脑里以前留下的 `build` 文件。
+`npm test` 会先用 Clang 生成独立测试夹具，再检查后端、VS Code 扩展和网页工作台。测试不依赖开发者电脑里以前留下的 `build` 文件。
 
 打包扩展前运行：
 

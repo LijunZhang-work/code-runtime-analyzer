@@ -31,9 +31,25 @@ jobs:
         shell: pwsh
         run: npm run install:all
 
-      - name: 执行完整检查
+      - name: 生成独立 Clang 测试夹具
         shell: pwsh
-        run: npm test
+        run: npm run prepare:test-fixture
+
+      - name: 执行后台测试
+        shell: pwsh
+        run: npm --prefix backend test
+
+      - name: 编译 VS Code 扩展
+        shell: pwsh
+        run: npm --prefix extension run compile
+
+      - name: 检查网页代码
+        shell: pwsh
+        run: npm --prefix web run lint
+
+      - name: 构建网页生产版本
+        shell: pwsh
+        run: npm --prefix web run build
 
       - name: 准备扩展内置备用后台
         shell: pwsh
