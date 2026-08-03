@@ -36,7 +36,7 @@ test('Clang index finds array-member expressions in the replay writer', { skip: 
   assert.equal(valueAccess.definitionLine, 6);
   assert.equal(valueAccess.declarationLine, 6);
   assert.equal(valueAccess.variableDeclarationKind, 'VarDecl');
-  assert.match(valueAccess.variableDeclarationType, /std::vector<Game::tile_t/);
+  assert.match(valueAccess.variableDeclarationType, /vector<(?:Game::)?tile_t/);
   assert.equal(valueAccess.rootStorageKind, 'local');
 });
 

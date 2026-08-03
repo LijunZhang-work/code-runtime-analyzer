@@ -95,7 +95,7 @@ function lastQuotedType(arcana) {
 }
 
 function referencedDeclaration(arcana) {
-  const match = /\b(ParmVar|Var|Field|CXXMethod|Function)\s+(0x[0-9a-f]+)\b/i.exec(String(arcana ?? ''));
+  const match = /\b(ParmVar|Var|Field|CXXMethod|Function)(?:Decl)?\s+(0x[0-9a-f]+)\b/i.exec(String(arcana ?? ''));
   return match ? { kind: match[1], id: match[2].toLowerCase() } : null;
 }
 
@@ -741,7 +741,6 @@ export class ClangdIndexService {
       }
       const symbol = await semantic;
       if (!symbol) continue;
-      if (candidate.kind === 'member' && !String(symbol.usr ?? '').includes('@FI@')) continue;
       const expression = expressionFromRange(context.source, lineStarts, candidate.node.range);
       if (expression === null) continue;
       if (candidate.kind === 'member') {
