@@ -1,14 +1,87 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
-import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
 const FUNCTION_KINDS = new Set(['FunctionDecl', 'CXXMethodDecl', 'CXXConstructorDecl', 'CXXDestructorDecl']);
 const CALL_KINDS = new Set(['CallExpr', 'CXXMemberCallExpr', 'CXXOperatorCallExpr']);
 const GRAPH_CACHE_MAX_ENTRIES = 16;
+const AST_OUTPUT_MAX_BYTES = 32 * 1024 * 1024;
+const STDERR_MAX_BYTES = 1024 * 1024;
 const graphCache = new Map();
+
+class ClangAstOutputLimitError extends Error {
+  constructor({ functionName, actualBytes, limitBytes }) {
+    super(`函数 ${functionName} 的 Clang AST 输出超过安全上限（已读取 ${Math.ceil(actualBytes / 1024 / 1024)}MB，上限 ${Math.floor(limitBytes / 1024 / 1024)}MB）`);
+    this.name = 'ClangAstOutputLimitError';
+    this.functionName = functionName;
+    this.actualBytes = actualBytes;
+    this.limitBytes = limitBytes;
+  }
+}
+
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('调用链分析已取消');
+  error.name = 'AbortError';
+  return error;
+}
+
+function runClangAstJson(compiler, args, { cwd, signal, functionName, maxBytes = AST_OUTPUT_MAX_BYTES } = {}) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(compiler, args, {
+      cwd,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let limitError;
+    let cancelledError;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => {
+      cancelledError = abortError(signal);
+      child.kill();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBytes) {
+        limitError ??= new ClangAstOutputLimitError({ functionName, actualBytes: stdoutBytes, limitBytes: maxBytes });
+        child.stdout.pause();
+        child.kill();
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      if (stderrBytes >= STDERR_MAX_BYTES) return;
+      const remaining = STDERR_MAX_BYTES - stderrBytes;
+      const retained = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+      stderr.push(retained);
+      stderrBytes += retained.length;
+    });
+    child.once('error', (error) => finish(rejectPromise, error));
+    child.once('close', (code, terminationSignal) => {
+      if (cancelledError) return finish(rejectPromise, cancelledError);
+      if (limitError) return finish(rejectPromise, limitError);
+      const errorText = Buffer.concat(stderr).toString('utf8').trim();
+      if (code !== 0) {
+        return finish(rejectPromise, new Error(errorText || `Clang 退出（code=${code ?? 'null'}，signal=${terminationSignal ?? 'null'}）`));
+      }
+      return finish(resolvePromise, Buffer.concat(stdout).toString('utf8'));
+    });
+  });
+}
 
 function comparablePath(filePath) {
   const absolute = resolve(filePath);
@@ -280,7 +353,7 @@ export function invalidateCallGraph({ filePath } = {}) {
  * actual AST. It intentionally does not claim to resolve virtual dispatch,
  * function pointers or callbacks.
  */
-export async function buildCallGraph({ compileCommandsPath, filePath, workspaceRoot, functionNames, focusLine, includeExternal = false, maxNodes = 140, maxEdges = 260, signal } = {}) {
+export async function buildCallGraph({ compileCommandsPath, filePath, workspaceRoot, functionNames, focusLine, includeExternal = false, maxNodes = 140, maxEdges = 260, signal } = {}, { runAstJson = runClangAstJson } = {}) {
   if (!compileCommandsPath || !filePath) throw new Error('调用链查询需要 compileCommandsPath 和 filePath');
   const startedAt = performance.now();
   const context = await compilationForFile({ compileCommandsPath, filePath });
@@ -310,6 +383,7 @@ export async function buildCallGraph({ compileCommandsPath, filePath, workspaceR
   const queuedNames = new Set(pendingNames);
   const analyzedNames = new Set();
   const functionsById = new Map();
+  const oversizedFunctionNames = new Set();
   let clangInvocationCount = 0;
   let analysisTruncated = false;
   while (pendingNames.length > 0) {
@@ -321,15 +395,14 @@ export async function buildCallGraph({ compileCommandsPath, filePath, workspaceR
     if (!name || analyzedNames.has(name)) continue;
     analyzedNames.add(name);
     const astArgs = [...context.args, '-Xclang', '-ast-dump=json', '-Xclang', `-ast-dump-filter=${name}`, '-fsyntax-only', context.sourceFile];
+    clangInvocationCount += 1;
     try {
-      const { stdout } = await execFileAsync(context.compiler, astArgs, {
+      const stdout = await runAstJson(context.compiler, astArgs, {
         cwd: context.directory,
-        encoding: 'utf8',
-        maxBuffer: 24 * 1024 * 1024,
         signal,
-        windowsHide: true
+        functionName: name,
+        maxBytes: AST_OUTPUT_MAX_BYTES
       });
-      clangInvocationCount += 1;
       const roots = parseJsonRoots(stdout);
       const functions = roots
         .flatMap((root) => collectFunctions(root, context.sourceFile, context.directory))
@@ -345,6 +418,11 @@ export async function buildCallGraph({ compileCommandsPath, filePath, workspaceR
         }
       }
     } catch (error) {
+      if (error instanceof ClangAstOutputLimitError || error?.name === 'ClangAstOutputLimitError') {
+        oversizedFunctionNames.add(name);
+        analysisTruncated = true;
+        continue;
+      }
       const details = error?.stderr ? String(error.stderr).trim() : error?.message;
       throw new Error(`Clang 调用链分析失败：${details || '未知错误'}`);
     }
@@ -361,13 +439,32 @@ export async function buildCallGraph({ compileCommandsPath, filePath, workspaceR
     ...locationOf(node),
     kind: 'definition'
   }]));
+  const nodesById = new Map([...internalById.values()].map((node) => [node.id, node]));
+  for (const functionName of oversizedFunctionNames) {
+    const matchingCandidates = candidates.filter((candidate) => candidate.name === functionName);
+    for (const candidate of matchingCandidates) {
+      const id = `oversized:${context.sourceFile}:${functionName}:${candidate.line}`;
+      nodesById.set(id, {
+        id,
+        declarationId: null,
+        label: functionName,
+        signature: `${functionName}（函数体过大，内部调用未展开）`,
+        filePath: context.sourceFile,
+        relativePath: workspaceRoot ? relative(resolve(workspaceRoot), context.sourceFile).replace(/\\/g, '/') : context.sourceFile,
+        line: candidate.line,
+        column: 1,
+        kind: 'definition',
+        analysisState: 'ast_output_limited'
+      });
+    }
+  }
   const internalByName = new Map();
-  for (const item of internalById.values()) {
+  for (const item of nodesById.values()) {
+    if (item.kind !== 'definition') continue;
     const values = internalByName.get(item.label) ?? [];
     values.push(item);
     internalByName.set(item.label, values);
   }
-  const nodesById = new Map([...internalById.values()].map((node) => [node.id, node]));
   const calls = functions.flatMap(({ node }) => collectCalls(node, node));
   const edgesById = new Map();
   let omittedExternalCallCount = 0;
@@ -458,12 +555,18 @@ export async function buildCallGraph({ compileCommandsPath, filePath, workspaceR
     omittedExternalCallCount,
     limitations: [
       '从当前焦点函数起，只展开当前文件中可确认的直接调用。',
-      '虚函数分派、函数指针、回调和跨线程调用不会被当作确定调用关系。'
+      '虚函数分派、函数指针、回调和跨线程调用不会被当作确定调用关系。',
+      ...(oversizedFunctionNames.size > 0
+        ? [`有 ${oversizedFunctionNames.size} 个复杂函数的 AST 输出超过 ${AST_OUTPUT_MAX_BYTES / 1024 / 1024}MB 安全上限；已保留函数节点，但停止展开其内部调用。`]
+        : [])
     ],
+    oversizedFunctionCount: oversizedFunctionNames.size,
+    oversizedFunctions: [...oversizedFunctionNames],
     performance: {
       cacheHit: false,
       clangInvocationCount,
       analyzedFunctionCount: functions.length,
+      astOutputLimitBytes: AST_OUTPUT_MAX_BYTES,
       totalMs: performance.now() - startedAt
     }
   };

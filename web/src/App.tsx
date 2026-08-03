@@ -70,6 +70,7 @@ type Graph = {
   limitations?: string[]
   truncated?: boolean
   omittedExternalCallCount?: number
+  oversizedFunctionCount?: number
   performance?: { cacheHit?: boolean; totalMs?: number; analyzedFunctionCount?: number }
 }
 
@@ -954,7 +955,7 @@ function CallGraphPanel({
           </ReactFlow></div>
         {loading && <div className="graph-loading"><LoaderCircle size={17} />正在从当前函数展开 Clang AST…</div>}
       </div>
-      <div className="graph-footnote"><span><Info size={14} />点击任一函数节点可切换诊断对象；定位操作只会回到打开本页的那个 VS Code 窗口。</span><span>{graph.nodes.filter((node) => node.kind === 'definition').length} 个函数节点 · {graph.edges.length} 条可确认调用边</span>{graph.omittedExternalCallCount ? <span>另有 {graph.omittedExternalCallCount} 个外部调用未展开</span> : <span>未把外部声明扩成无边界图</span>}</div>
+      <div className="graph-footnote"><span><Info size={14} />点击任一函数节点可切换诊断对象；定位操作只会回到打开本页的那个 VS Code 窗口。</span><span>{graph.nodes.filter((node) => node.kind === 'definition').length} 个函数节点 · {graph.edges.length} 条可确认调用边</span>{graph.oversizedFunctionCount ? <span>{graph.oversizedFunctionCount} 个复杂函数为保护内存已停止继续展开</span> : graph.omittedExternalCallCount ? <span>另有 {graph.omittedExternalCallCount} 个外部调用未展开</span> : <span>未把外部声明扩成无边界图</span>}</div>
     </section>
   )
 }

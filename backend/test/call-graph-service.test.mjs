@@ -32,3 +32,27 @@ test('Clang call graph never returns an edge whose node was trimmed', async () =
   });
   assert.equal(cached.performance.cacheHit, true);
 });
+
+test('an oversized function keeps a bounded visible node instead of failing the whole graph', async () => {
+  const graph = await buildCallGraph({
+    workspaceRoot,
+    compileCommandsPath: resolve(workspaceRoot, 'build', '2048_csv_replay-current-mingw', 'compile_commands.json'),
+    filePath: resolve(workspaceRoot, 'labs', '2048_csv_replay', 'src', 'replay_scenario.cpp'),
+    functionNames: ['main'],
+    maxNodes: 12,
+    maxEdges: 20
+  }, {
+    runAstJson: async (_compiler, _args, { functionName, maxBytes }) => {
+      const error = new Error(`函数 ${functionName} 超过 ${maxBytes}`);
+      error.name = 'ClangAstOutputLimitError';
+      throw error;
+    }
+  });
+
+  assert.equal(graph.truncated, true);
+  assert.equal(graph.oversizedFunctionCount, 1);
+  assert.deepEqual(graph.oversizedFunctions, ['main']);
+  assert.equal(graph.nodes.find((node) => node.id === graph.focusNodeId)?.label, 'main');
+  assert.equal(graph.nodes.find((node) => node.id === graph.focusNodeId)?.analysisState, 'ast_output_limited');
+  assert.match(graph.limitations.at(-1), /安全上限/);
+});
