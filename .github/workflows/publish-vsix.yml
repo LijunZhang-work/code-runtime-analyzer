@@ -114,7 +114,12 @@ jobs:
           $outputDir = Join-Path '${{ github.workspace }}' 'build\installer'
           $vsixName = 'Code-Runtime-Analyzer-${{ github.ref_name }}.vsix'
           New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-          $makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
+          $installedMakensis = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          $makensis = if (Test-Path -LiteralPath $installedMakensis) {
+            $installedMakensis
+          } else {
+            (Get-Command makensis.exe -ErrorAction Stop).Source
+          }
           & $makensis "/DAPP_VERSION=$releaseVersion" "/DSOURCE_ROOT=$sourceRoot" "/DOUTPUT_DIR=$outputDir" "/DVSIX_NAME=$vsixName" 'installer\windows\CodeRuntimeAnalyzer.nsi'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
