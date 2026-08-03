@@ -588,7 +588,8 @@ export class ClangdIndexService {
 
   async #prepareContext(options) {
     const compileCommandsPath = resolve(options.compileCommandsPath);
-    const absoluteFile = resolve(options.filePath);
+    const requestedFile = resolve(options.filePath);
+    const absoluteFile = await realpath(requestedFile).catch(() => requestedFile);
     const [database, source] = await Promise.all([
       this.#loadCompileDatabase(compileCommandsPath),
       readUtf8(absoluteFile)
@@ -622,7 +623,7 @@ export class ClangdIndexService {
       clangdExecutable
     }));
     const cacheKey = sha256(JSON.stringify({
-      version: 2,
+      version: 3,
       absoluteFile: comparablePath(absoluteFile),
       sourceHash: sha256(source),
       contextFingerprint,
@@ -660,9 +661,11 @@ export class ClangdIndexService {
     const entriesByFile = new Map();
     for (const rawEntry of entries) {
       if (!rawEntry || typeof rawEntry !== 'object' || typeof rawEntry.file !== 'string') continue;
-      const directory = resolve(rawEntry.directory ?? dirname(filePath));
+      const requestedDirectory = resolve(rawEntry.directory ?? dirname(filePath));
+      const directory = await realpath(requestedDirectory).catch(() => requestedDirectory);
       const entry = { ...rawEntry, directory };
-      const sourcePath = resolve(directory, rawEntry.file);
+      const requestedSourcePath = resolve(directory, rawEntry.file);
+      const sourcePath = await realpath(requestedSourcePath).catch(() => requestedSourcePath);
       const key = comparablePath(sourcePath);
       const list = entriesByFile.get(key) ?? [];
       list.push(entry);
