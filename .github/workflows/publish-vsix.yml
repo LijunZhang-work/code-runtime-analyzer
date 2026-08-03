@@ -66,6 +66,9 @@ jobs:
             ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
             Get-Content -LiteralPath 'backend-test.log' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
             '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            $details = (Get-Content -LiteralPath 'backend-test.log' -Tail 160) -join "`n"
+            $annotation = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=后台测试失败详情::$annotation"
             exit $testExitCode
           }
 
