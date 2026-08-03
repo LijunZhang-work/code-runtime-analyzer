@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run C/C++ Historical Diagnostics",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/labs/2048_csv_replay/src/replay_scenario.cpp"
+      ],
+      "outFiles": ["${workspaceFolder}/extension/out/**/*.js"],
+      "preLaunchTask": "Compile C/C++ Historical Diagnostics extension"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "code-runtime-analyzer",
+  "version": "0.9.1",
+  "private": true,
+  "description": "把代码结构、产品功能模块和历史运行数据关联起来的分析平台",
+  "scripts": {
+    "install:all": "npm --prefix backend ci && npm --prefix extension ci && npm --prefix web ci",
+    "mcp": "npm --prefix backend run mcp",
+    "prepare:extension": "npm --prefix web run build && node scripts/prepare-extension.mjs",
+    "test": "npm --prefix backend test && npm --prefix extension run compile && npm --prefix web run lint && npm --prefix web run build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

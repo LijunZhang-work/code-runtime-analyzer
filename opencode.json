@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cpp-csv-diagnostics": {
+      "type": "local",
+      "command": ["node.exe", "backend/src/mcp-server.mjs"],
+      "cwd": ".",
+      "enabled": true,
+      "timeout": 15000
+    }
+  }
+}

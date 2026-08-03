@@ -1,0 +1,61 @@
+{
+  "name": "cpp-csv-diagnostics",
+  "displayName": "C/C++ Historical Diagnostics",
+  "version": "0.9.1",
+  "publisher": "local",
+  "engines": { "vscode": "^1.131.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onLanguage:c", "onLanguage:cpp", "onUri", "onView:cppCsvDiagnostics.diagnosticsPanel"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "cppCsvDiagnostics.selectDictionary", "title": "C/C++ Diagnostics: 选择字段字典" },
+      { "command": "cppCsvDiagnostics.selectDataFolder", "title": "C/C++ Diagnostics: 选择 CSV 文件夹" },
+      { "command": "cppCsvDiagnostics.reloadDictionary", "title": "C/C++ Diagnostics: 加载 / 重新加载字典" },
+      { "command": "cppCsvDiagnostics.reloadCsv", "title": "C/C++ Diagnostics: 加载 / 重新加载 CSV" },
+      { "command": "cppCsvDiagnostics.toggleDisplay", "title": "C/C++ Diagnostics: 开始 / 结束展示" },
+      { "command": "cppCsvDiagnostics.selectReplay", "title": "C/C++ Diagnostics: 选择回放时间" },
+      { "command": "cppCsvDiagnostics.refresh", "title": "C/C++ Diagnostics: 刷新历史值" },
+      { "command": "cppCsvDiagnostics.load2048Demo", "title": "C/C++ Diagnostics: 加载 2048 演示" },
+      { "command": "cppCsvDiagnostics.openTrend", "title": "C/C++ Diagnostics: 打开字段趋势" },
+      { "command": "cppCsvDiagnostics.showDataQuality", "title": "C/C++ Diagnostics: 查看 CSV 数据质量" },
+      { "command": "cppCsvDiagnostics.openWebWorkbench", "title": "C/C++ Diagnostics: 打开网页工作台" }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "cppCsvDiagnostics",
+          "title": "历史诊断",
+          "icon": "media/history.svg"
+        }
+      ]
+    },
+    "views": {
+      "cppCsvDiagnostics": [
+        {
+          "id": "cppCsvDiagnostics.diagnosticsPanel",
+          "name": "诊断功能",
+          "icon": "$(history)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "C/C++ Historical Diagnostics",
+      "properties": {
+        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "诊断后端地址。保留默认值时，每个 VS Code 窗口会在动态本地端口启动独立内置后端；填写自定义地址时只连接该服务。" },
+        "cppCsvDiagnostics.compileCommandsPath": { "type": "string", "default": "", "description": "可选的 compile_commands.json 路径。为空时自动在工作区查找（优先根目录和 build 目录）；找到多个时会提示选择并记住当前工作区的选择。" },
+        "cppCsvDiagnostics.clangdPath": { "type": "string", "default": "", "description": "可选的 clangd 可执行文件路径。为空时优先使用编译器同目录的 clangd，再尝试系统 PATH。" },
+        "cppCsvDiagnostics.functionNames": { "type": "array", "items": { "type": "string" }, "default": [], "description": "可选的函数名限制；为空时由后端发现当前文件中的函数候选，再由 Clang 逐个验证。" }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.0.0"
+  }
+}

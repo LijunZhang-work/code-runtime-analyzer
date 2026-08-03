@@ -1,0 +1,55 @@
+# Dependency folders
+**/node_modules/
+
+# Build output and generated files
+build/
+**/out/
+**/dist/
+backend/web-dist/
+extension/backend/
+*.vsix
+*.map
+
+# Local toolchains and downloaded third-party demo sources
+tools/
+third_party/
+
+# Runtime data: real exported logs must never be committed
+runs/*
+!runs/README.md
+!runs/2048_demo_run.csv
+!runs/2048_metrics.csv
+*.log
+*.tmp
+*.cache
+
+# Local compiler/index state
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Testing/
+.cache/
+.clangd/
+
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.sqlite
+*.sqlite3
+
+# Operating-system clutter
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Unused prototype/template assets kept locally but not published
+web/src/assets/hero.png
+web/src/assets/react.svg
+web/src/assets/vite.svg
+web/public/icons.svg

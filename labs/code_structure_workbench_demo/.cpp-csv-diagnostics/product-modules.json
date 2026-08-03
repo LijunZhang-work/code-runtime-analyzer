@@ -1,0 +1,59 @@
+{
+  "format": "cpp-csv-diagnostics/product-modules",
+  "modules": [
+    {
+      "id": "safety-governor",
+      "name": "安全约束",
+      "description": "检查温度与电压边界，并在异常时降额。",
+      "functions": [
+        { "functionName": "check_thermal_limit", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "check_voltage_limit", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "apply_safety_derate", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "raise_alarm", "relativePath": "src/energy_dispatch_demo.cpp" }
+      ]
+    },
+    {
+      "id": "platform-services",
+      "name": "基础服务",
+      "description": "配置、时钟、审计和帧分配等公共能力。",
+      "functions": [
+        { "functionName": "load_control_config", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "monotonic_time_ms", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "write_audit_log", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "allocate_frame", "relativePath": "src/energy_dispatch_demo.cpp" }
+      ]
+    },
+    {
+      "id": "event-delivery",
+      "name": "事件下发",
+      "description": "持久化控制指令并发布控制事件。",
+      "functions": [
+        { "functionName": "enqueue_dispatch", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "persist_command", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "emit_control_event", "relativePath": "src/energy_dispatch_demo.cpp" }
+      ]
+    },
+    {
+      "id": "data-acquisition",
+      "name": "数据采集",
+      "description": "读取、校验并发布母线测量数据。",
+      "functions": [
+        { "functionName": "read_bus_snapshot", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "validate_measurements", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "normalize_samples", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "publish_telemetry", "relativePath": "src/energy_dispatch_demo.cpp" }
+      ]
+    },
+    {
+      "id": "energy-allocation",
+      "name": "能量分配",
+      "description": "估算需求、预测储能并计算各母线目标值。",
+      "functions": [
+        { "functionName": "estimate_demand", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "forecast_storage", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "allocate_bus_targets", "relativePath": "src/energy_dispatch_demo.cpp" },
+        { "functionName": "clamp_dispatch", "relativePath": "src/energy_dispatch_demo.cpp" }
+      ]
+    }
+  ]
+}

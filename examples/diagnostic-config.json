@@ -1,0 +1,37 @@
+{
+  "csvSources": [
+    {
+      "id": "boss-log",
+      "filePath": "E:/Product _B_log/examples/boss_log.csv",
+      "timeColumn": "timestamp"
+    }
+  ],
+  "mappings": [
+    {
+      "runRecordId": "demo-run",
+      "csvSourceId": "boss-log",
+      "csvColumn": "BOSS_2_BOSS_ID",
+      "codeField": { "module": "demo", "typeName": "BossInfo", "variablePath": "bossInfo", "fieldName": "bossId", "index": 2 },
+      "indexRule": "CSV column number maps to fixed array index",
+      "mappingSource": "rule",
+      "confidence": "confirmed"
+    },
+    {
+      "runRecordId": "demo-run",
+      "csvSourceId": "boss-log",
+      "csvColumn": "BOSS_2_STATUS",
+      "codeField": { "module": "demo", "typeName": "BossInfo", "variablePath": "bossInfo", "fieldName": "status", "index": 2 },
+      "indexRule": "CSV column number maps to fixed array index",
+      "mappingSource": "rule",
+      "confidence": "confirmed"
+    },
+    {
+      "runRecordId": "demo-run",
+      "csvSourceId": "boss-log",
+      "csvColumn": "targetId",
+      "codeField": { "module": "demo", "typeName": "int", "variablePath": "targetId", "fieldName": "value" },
+      "mappingSource": "exact",
+      "confidence": "confirmed"
+    }
+  ]
+}

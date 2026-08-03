@@ -1,0 +1,8 @@
+data_source,data_field,target_kind,target,definition_path
+2048_demo_run.csv,timestamp,time,unix_ms,
+2048_demo_run.csv,TILE_{index}_VALUE,member,Game::tile_t::value,labs/2048_csv_replay/include/tile.hpp
+2048_demo_run.csv,TILE_{index}_BLOCKED,member,Game::tile_t::blocked,labs/2048_csv_replay/include/tile.hpp
+2048_metrics.csv,timestamp,time,unix_ms,
+2048_metrics.csv,score,member,Game::GameBoard::score,labs/2048_csv_replay/include/gameboard.hpp
+2048_metrics.csv,moved,member,Game::GameBoard::moved,labs/2048_csv_replay/include/gameboard.hpp
+2048_metrics.csv,largest_tile,member,Game::GameBoard::largestTile,labs/2048_csv_replay/include/gameboard.hpp
