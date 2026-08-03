@@ -1,6 +1,6 @@
 {
   "name": "code-runtime-analyzer",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "private": true,
   "description": "把代码结构、产品功能模块和历史运行数据关联起来的分析平台",
   "scripts": {

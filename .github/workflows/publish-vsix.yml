@@ -1,0 +1,49 @@
+name: 发布 VS Code 安装包
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 VSIX
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 取出本次版本的源码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            extension/package-lock.json
+            web/package-lock.json
+
+      - name: 安装构建依赖
+        run: |
+          npm --prefix backend ci
+          npm --prefix extension ci
+          npm --prefix web ci
+
+      - name: 构建网页和扩展
+        run: |
+          npm run prepare:extension
+          npm --prefix extension run compile
+
+      - name: 打包普通用户安装包
+        working-directory: extension
+        run: npx --yes @vscode/vsce package --no-yarn --out "../Code-Runtime-Analyzer-${{ github.ref_name }}.vsix"
+
+      - name: 创建 GitHub Release 并上传安装包
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: Code-Runtime-Analyzer-${{ github.ref_name }}.vsix

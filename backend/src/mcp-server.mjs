@@ -69,7 +69,7 @@ const revisionInput = {
 
 export async function createDiagnosticsMcp() {
   const api = await startLocalApi();
-  const mcp = new McpServer({ name: 'code-runtime-analyzer', version: '0.9.1' });
+  const mcp = new McpServer({ name: 'code-runtime-analyzer', version: '0.9.2' });
 
   mcp.registerTool('diagnostics_list_dictionaries', {
     title: '列出字段字典',
