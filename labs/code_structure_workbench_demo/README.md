@@ -1,13 +1,20 @@
-# 代码结构工作台真实 Demo
+# 函数调用关系演示
 
-这个目录不是为了截图临时拼出的假数据。`src/energy_dispatch_demo.cpp` 是一份可以由 Clang 解析和编译的 C++ 示例，网页默认展示的函数、调用边和产品模块都与这里的代码及配置逐项对应。
+这篇写给想体验网页函数调用关系的人。
 
-- 焦点函数：`run_dispatch_cycle`
-- 产品模块：数据采集、能量分配、安全约束、事件下发、基础服务
-- 模块配置：`.cpp-csv-diagnostics/product-modules.json`
+示例代码位于 `src/energy_dispatch_demo.cpp`，包含数据采集、能量分配、安全约束、事件下发和基础服务等多个函数。焦点函数是 `run_dispatch_cycle`，它确实调用了其他函数，因此打开网页后可以看到真实连线。
 
-生成本机编译数据库：
+## 使用步骤
+
+1. 用 CMake 为这个演示生成 `compile_commands.json`；
+2. 在 VS Code 中打开 `src/energy_dispatch_demo.cpp`；
+3. 把光标放进 `run_dispatch_cycle` 函数；
+4. 在右侧面板点击“打开网页工作台”。
+
+开发者生成编译数据库的示例命令：
 
 ```powershell
-cmake -S . -B ../../build/code_structure_workbench_demo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake -S labs/code_structure_workbench_demo -B build/code_structure_workbench_demo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
+
+产品模块示例配置位于 `.cpp-csv-diagnostics/product-modules.json`。这里的数据和关系都来自真实演示代码，不是为了截图画出的假连线。

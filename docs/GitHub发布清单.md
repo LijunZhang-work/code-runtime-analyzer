@@ -1,5 +1,7 @@
 # GitHub 发布清单
 
+这篇写给准备提交代码的人。它只回答“哪些文件能上传、哪些不能上传”；普通使用者不需要阅读。
+
 ## 可以提交
 
 - `backend/src`、`backend/test`、`backend/dictionaries`：后端源码、测试和产品字典；

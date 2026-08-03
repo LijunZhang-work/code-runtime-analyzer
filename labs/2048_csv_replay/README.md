@@ -1,28 +1,42 @@
-# 2048 CSV 回放实验场
+# 2048 CSV 回放演示
 
-该实验场使用上游 `third_party/2048.cpp-master` 的公开 `GameBoard` 与 `tile_t` 数据结构，不修改上游源码。它构造 4 组确定性诊断棋盘，每组记录向左移动前、移动后两个快照，共 8 个时间点。各组是独立重置的诊断夹具，不代表一局连续游戏；这里的移动逻辑也不能替代完整 2048 游戏实现。
+这篇写给想先用虚构数据试一遍工具的人。演示不会读取真实产品日志。
 
-## 0.4.0 演示数据
+## 怎么加载演示
 
-在 VS Code 右侧 **历史诊断** 面板选择：
+在 VS Code 右侧“历史诊断”面板中选择：
 
-- 字典：`2048-demo`；
+- 字段字典：`2048-demo`；
 - CSV 文件夹：仓库根目录下的 `runs/`。
 
-后台会一次加载两个精确来源：
+然后依次点击：
 
-- `2048_demo_run.csv`：`TILE_<index>_VALUE/BLOCKED`；
-- `2048_metrics.csv`：`score`、`largest_tile`、`moved`。
+```text
+加载 / 重新加载字典 → 加载 / 重新加载 CSV → 选择时间 → 开始展示
+```
 
-两份文件都使用 Unix 毫秒 `timestamp`，各有 8 个时间点。标准 CSV 没有 sheet；文件名和大小写必须与字典完全一致。
+工具会加载：
 
-唯一有效的演示字典是 [backend/dictionaries/2048-demo.csv](../../backend/dictionaries/2048-demo.csv)。旧 `field-mappings.csv`、`replay-mapping.json` 和 `replay-run-config.json` 均已删除，0.4.0 不再使用旧的自动导入配置流程。
+- `2048_demo_run.csv`：16 个棋盘格的值和阻塞状态；
+- `2048_metrics.csv`：分数、最大方块和是否发生移动。
 
-字段的真实定义位置为：
+两份 CSV 都有 8 个虚构时间点。
 
-- `Game::tile_t::value/blocked`：`third_party/2048.cpp-master/src/headers/tile.hpp`；
-- `Game::GameBoard::score/moved/largestTile`：`third_party/2048.cpp-master/src/headers/gameboard.hpp`。
+## 字典和代码在哪里
 
-源码中的 `set_board`、`write_snapshot`、`apply_move` 和 `main` 包含可由 Clang 确认的成员访问。`current`、`target` 等引用只能确认 owner 类型，无法仅凭静态源码确定当次循环对应的 tile 下标，因此界面展示的是相应字段的全实例时间点快照。
+- 演示字典：`backend/dictionaries/2048-demo.csv`；
+- 棋盘类型：`labs/2048_csv_replay/include/gameboard.hpp`；
+- 格子类型：`labs/2048_csv_replay/include/tile.hpp`；
+- 产生数据的代码：`labs/2048_csv_replay/src/replay_scenario.cpp`。
 
-构建信息由 0.4.0 自动发现 `compile_commands.json`；用户不需要维护实验 JSON 或手工填写某台电脑的绝对 build 路径。生成的演示 CSV 写入 `runs/`。
+这些文件全部在仓库里，不依赖本机 `third_party` 下载目录，所以新电脑克隆仓库后仍可以使用。
+
+## 为什么同一个字段会显示多个值
+
+棋盘有 16 个 `tile_t`。字典中的 `TILE_{index}_VALUE` 会展开为 0 到 15，因此 `tile_t::value` 在一个时间点有 16 个实例值。
+
+仅看静态 C++ 代码时，工具能确认 `current.value` 的类型是 `tile_t::value`，但不能假装知道某次循环中的 `current` 一定是第几个格子，所以界面会保留所有有来源的实例。
+
+## 如何重新生成演示 CSV
+
+这一步只给开发者使用。先用 CMake 生成 `compile_commands.json` 并编译，再运行 `2048_csv_replay`。普通使用者直接使用 `runs/` 中已经提供的演示 CSV 即可。

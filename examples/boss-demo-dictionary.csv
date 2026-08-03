@@ -1,0 +1,4 @@
+data_source,data_field,target_kind,target,definition_path
+boss_log.csv,timestamp,time,iso8601,
+boss_log.csv,BOSS_{index}_BOSS_ID,member,BossInfo::bossId,examples/boss_control.cpp
+boss_log.csv,BOSS_{index}_STATUS,member,BossInfo::status,examples/boss_control.cpp
