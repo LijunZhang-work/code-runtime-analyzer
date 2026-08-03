@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { createClangIndexService } from '../src/clang-indexer.mjs';
 
 const workspace = resolve(import.meta.dirname, '../..');
+const clangdPath = process.env.CLANGD_TEST_PATH;
 
 async function bundledCompiler() {
   const database = JSON.parse(await readFile(
@@ -22,6 +23,7 @@ test('Clangd index parses once and serves an unchanged structural result from ca
     const request = {
       compileCommandsPath: `${workspace}/build/2048_csv_replay-current-mingw/compile_commands.json`,
       filePath: `${workspace}/labs/2048_csv_replay/src/replay_scenario.cpp`,
+      clangdPath,
       targetHints: { members: ['value', 'blocked', 'score'], globals: [] }
     };
     const cold = await service.indexFile(request);
@@ -65,6 +67,7 @@ test('Clangd index supports arguments entries and covers methods with UTF-8 befo
     const result = await service.indexFile({
       compileCommandsPath: databasePath,
       filePath: sourcePath,
+      clangdPath,
       targetHints: { members: ['age'], globals: [] }
     });
     const age = result.fields.find((field) => field.memberName === 'age');
@@ -98,7 +101,7 @@ test('Clangd index refuses to guess when one source has multiple compile context
       { directory, arguments: [compiler, '-DPRODUCT_B', '-c', sourcePath], file: sourcePath }
     ]), 'utf8');
     await assert.rejects(
-      service.indexFile({ compileCommandsPath: databasePath, filePath: sourcePath }),
+      service.indexFile({ compileCommandsPath: databasePath, filePath: sourcePath, clangdPath }),
       (error) => error?.details?.code === 'compile_context_ambiguous'
         && error.details.candidateCount === 2
     );

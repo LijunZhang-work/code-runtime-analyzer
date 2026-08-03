@@ -31,6 +31,24 @@ jobs:
         shell: pwsh
         run: npm run install:all
 
+      - name: 准备固定且配套的 C++ 测试工具链
+        shell: pwsh
+        run: |
+          $archive = Join-Path '${{ runner.temp }}' 'llvm-mingw-20260519-ucrt-x86_64.zip'
+          $destination = Join-Path '${{ runner.temp }}' 'llvm-mingw-20260519'
+          Invoke-WebRequest -Uri 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-x86_64.zip' -OutFile $archive
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          $expectedHash = '72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9'
+          if ($actualHash -ne $expectedHash) { throw "LLVM-MinGW 下载文件校验失败：$actualHash" }
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+          $clangd = Get-ChildItem -LiteralPath $destination -Recurse -Filter 'clangd.exe' | Select-Object -First 1
+          $clangxx = Get-ChildItem -LiteralPath $destination -Recurse -Filter 'clang++.exe' | Select-Object -First 1
+          if (-not $clangd -or -not $clangxx) { throw 'LLVM-MinGW 压缩包缺少 clangd.exe 或 clang++.exe' }
+          "CLANGD_TEST_PATH=$($clangd.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLANGXX_PATH=$($clangxx.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $clangd.FullName --version
+          & $clangxx.FullName --version
+
       - name: 生成独立 Clang 测试夹具
         shell: pwsh
         run: npm run prepare:test-fixture

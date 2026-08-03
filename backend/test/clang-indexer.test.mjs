@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { indexFile } from '../src/clang-indexer.mjs';
 
 const workspace = resolve(import.meta.dirname, '../..');
+const clangdPath = process.env.CLANGD_TEST_PATH;
 
 test('Clang index finds array-member expressions in the replay writer', { skip: process.platform !== 'win32' }, async () => {
   const result = await indexFile({
@@ -13,7 +14,8 @@ test('Clang index finds array-member expressions in the replay writer', { skip: 
     // VS Code commonly normalizes a Windows drive letter to lower-case while
     // CMake preserves upper-case in compile_commands.json.
     filePath: `${workspace}/labs/2048_csv_replay/src/replay_scenario.cpp`.toLowerCase(),
-    functionName: 'write_snapshot'
+    functionName: 'write_snapshot',
+    clangdPath
   });
   const valueAccess = result.fields.find((field) => field.expression === 'tiles[index].value');
   assert.equal(valueAccess.memberName, 'value');
@@ -44,7 +46,8 @@ test('Clang index batches exact functions and parses concatenated main AST roots
   const result = await indexFile({
     compileCommandsPath: `${workspace}/build/2048_csv_replay-current-mingw/compile_commands.json`,
     filePath: `${workspace}/labs/2048_csv_replay/src/replay_scenario.cpp`,
-    functionNames: ['apply_move', 'main', 'apply_move']
+    functionNames: ['apply_move', 'main', 'apply_move'],
+    clangdPath
   });
 
   assert.deepEqual(result.functionNames, ['apply_move', 'main']);
@@ -74,7 +77,8 @@ test('Clang index batches exact functions and parses concatenated main AST roots
 test('Clang index discovers current-file function candidates without dumping the full AST', { skip: process.platform !== 'win32' }, async () => {
   const result = await indexFile({
     compileCommandsPath: `${workspace}/build/2048_csv_replay-current-mingw/compile_commands.json`,
-    filePath: `${workspace}/labs/2048_csv_replay/src/replay_scenario.cpp`
+    filePath: `${workspace}/labs/2048_csv_replay/src/replay_scenario.cpp`,
+    clangdPath
   });
 
   assert.deepEqual(result.functionNames, ['set_board', 'write_header', 'write_snapshot', 'apply_move', 'main']);
@@ -117,7 +121,12 @@ test('Clang index reports independent globals but not locals or member bases as 
     output: objectPath
   }]), 'utf8');
 
-  const result = await indexFile({ compileCommandsPath, filePath: sourcePath, functionName: 'inspect' });
+  const result = await indexFile({
+    compileCommandsPath,
+    filePath: sourcePath,
+    functionName: 'inspect',
+    clangdPath
+  });
   const globals = result.fields.filter((field) => field.symbolKind === 'global');
   assert.equal(globals.length, 1);
   assert.equal(globals[0].name, 'global_count');
