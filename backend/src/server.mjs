@@ -10,6 +10,9 @@ import { buildCallGraph, invalidateCallGraph } from './call-graph-service.mjs';
 import { importConfig } from './config-loader.mjs';
 import { listDictionaries, loadDictionaryFolder } from './dictionary-service.mjs';
 import { deleteProductModule, listProductModules, upsertProductModule } from './module-service.mjs';
+import { IntegrationRegistry } from './integration-registry.mjs';
+import { API_VERSION, DEFAULT_BACKEND_URL, PRODUCT_VERSION, opencodeConfigurations } from './runtime-info.mjs';
+import { WebSessionBroker } from './web-session-broker.mjs';
 
 function reply(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -81,7 +84,11 @@ export function createDiagnosticServer({
   webDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web-dist'),
   clangIndexService = createClangIndexService(),
   onWebOpen,
-  webSessionId
+  webSessionId,
+  webSessionBroker = new WebSessionBroker(),
+  integrationRegistry = new IntegrationRegistry(),
+  runtimeMode = 'standalone',
+  instanceId = process.env.CODE_RUNTIME_ANALYZER_INSTANCE_ID
 } = {}) {
   const evidenceService = new EvidenceService(csvStore, mappingStore);
   let activeData;
@@ -98,33 +105,100 @@ export function createDiagnosticServer({
     try {
       const url = new URL(request.url, 'http://127.0.0.1');
       if (request.method === 'GET' && url.pathname === '/health') {
-        return reply(response, 200, { status: 'ok', version: '0.9.1', apiVersion: '0.9' });
+        return reply(response, 200, {
+          status: 'ok',
+          product: 'code-runtime-analyzer',
+          version: PRODUCT_VERSION,
+          apiVersion: API_VERSION,
+          runtimeMode,
+          instanceId: instanceId || undefined,
+          capabilities: ['history-replay', 'code-analysis', 'web-workbench', 'vscode-session', 'mcp-shared-core']
+        });
       }
       if (request.method === 'GET' && (url.pathname === '/workbench' || url.pathname.startsWith('/workbench/'))) {
         return await serveWorkbench(response, url, webDirectory);
+      }
+      if (request.method === 'POST' && url.pathname === '/api/web/sessions/register') {
+        return reply(response, 201, webSessionBroker.register(await bodyOf(request)));
+      }
+      if (request.method === 'POST' && url.pathname === '/api/web/sessions/unregister') {
+        const body = await bodyOf(request);
+        return reply(response, 200, { removed: webSessionBroker.unregister(body.windowSessionId) });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/web/sessions/poll') {
+        const body = await bodyOf(request);
+        if (typeof body.windowSessionId !== 'string' || body.windowSessionId === '') {
+          throw new Error('窗口会话轮询缺少 windowSessionId');
+        }
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        request.once('aborted', abort);
+        response.once('close', abort);
+        try {
+          const result = await webSessionBroker.poll(body.windowSessionId, {
+            timeoutMs: body.timeoutMs,
+            signal: controller.signal
+          });
+          if (response.destroyed) return;
+          return reply(response, 200, result);
+        } finally {
+          request.off('aborted', abort);
+          response.off('close', abort);
+        }
       }
       if (request.method === 'POST' && url.pathname === '/api/web/open-in-vscode') {
         const body = await bodyOf(request);
         if (typeof body.filePath !== 'string' || body.filePath.trim() === '') {
           throw new Error('网页定位请求缺少 filePath');
         }
-        if (typeof onWebOpen !== 'function' || typeof webSessionId !== 'string') {
-          return reply(response, 409, {
-            error: '此网页没有连接到当前 VS Code 窗口。请从 VS Code 右侧“打开网页工作台”重新进入。'
-          });
-        }
-        if (body.windowSessionId !== webSessionId) {
-          return reply(response, 403, {
-            error: '此网页与当前 VS Code 窗口的绑定已失效。请关闭网页后从原 VS Code 窗口重新打开。'
-          });
-        }
-        onWebOpen({
+        const location = {
           filePath: body.filePath,
           workspaceRoot: typeof body.workspaceRoot === 'string' ? body.workspaceRoot : undefined,
           line: Number.isInteger(Number(body.line)) && Number(body.line) > 0 ? Number(body.line) : 1,
           column: Number.isInteger(Number(body.column)) && Number(body.column) > 0 ? Number(body.column) : 1
-        });
+        };
+        if (typeof onWebOpen === 'function' && typeof webSessionId === 'string') {
+          if (body.windowSessionId !== webSessionId) {
+            return reply(response, 403, {
+              error: '此网页与当前 VS Code 窗口的绑定已失效。请关闭网页后从原 VS Code 窗口重新打开。'
+            });
+          }
+          onWebOpen(location);
+        } else if (!webSessionBroker.publish(body.windowSessionId, location)) {
+          return reply(response, 409, {
+            error: '此网页没有连接到当前 VS Code 窗口，或窗口会话已经结束。请从 VS Code 右侧“打开网页工作台”重新进入。'
+          });
+        }
         return reply(response, 202, { accepted: true });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/integrations/register') {
+        return reply(response, 201, integrationRegistry.register(await bodyOf(request)));
+      }
+      if (request.method === 'POST' && url.pathname === '/api/integrations/heartbeat') {
+        const body = await bodyOf(request);
+        return reply(response, 200, { active: integrationRegistry.heartbeat(body.clientId) });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/integrations/unregister') {
+        const body = await bodyOf(request);
+        return reply(response, 200, { removed: integrationRegistry.unregister(body.clientId) });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/integrations/status') {
+        return reply(response, 200, {
+          product: 'code-runtime-analyzer',
+          version: PRODUCT_VERSION,
+          apiVersion: API_VERSION,
+          runtimeMode,
+          vscodeWindows: webSessionBroker.summary(),
+          aiClients: integrationRegistry.summary(),
+          capabilities: ['VS Code 代码内展示', 'Web 函数与模块工作台', 'OpenCode / AI MCP', '字段字典与 CSV 历史回放']
+        });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/integrations/opencode-config') {
+        const address = server.address();
+        const baseUrl = address && typeof address !== 'string'
+          ? `http://127.0.0.1:${address.port}`
+          : DEFAULT_BACKEND_URL;
+        return reply(response, 200, opencodeConfigurations(baseUrl));
       }
       if (request.method === 'POST' && url.pathname === '/api/config/import') {
         const { configPath } = await bodyOf(request);
@@ -264,8 +338,13 @@ export function createDiagnosticServer({
   return server;
 }
 
-export function startDiagnosticServer({ port = Number(process.env.DIAGNOSTIC_PORT ?? 47831) } = {}) {
-  const server = createDiagnosticServer();
+export function startDiagnosticServer({
+  port = Number(process.env.DIAGNOSTIC_PORT ?? 47831),
+  dictionaryDirectory = process.env.CODE_RUNTIME_ANALYZER_DICTIONARY_DIR,
+  runtimeMode = 'standalone',
+  instanceId = process.env.CODE_RUNTIME_ANALYZER_INSTANCE_ID
+} = {}) {
+  const server = createDiagnosticServer({ dictionaryDirectory, runtimeMode, instanceId });
   server.listen(port, '127.0.0.1', () => console.log(`Diagnostic backend listening at http://127.0.0.1:${port}`));
   return server;
 }

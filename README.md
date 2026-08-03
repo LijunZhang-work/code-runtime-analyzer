@@ -4,11 +4,28 @@
 
 比如 CSV 里记录了某个学生在不同时间的 `age`，代码里有 `Student::age`。选择一个时间点后，工具可以在使用 `Student::age` 的代码旁显示当时的值。你不需要自己在几万行日志里来回查找。
 
-## 普通用户先安装这个，不要下载源码
+## 普通用户只下载统一安装程序
 
-请到 [GitHub Releases（正式安装包）](https://github.com/LijunZhang-work/code-runtime-analyzer/releases/latest) 下载最新的 `.vsix` 文件，再在 VS Code 中选择“扩展 → `...` → 从 VSIX 安装”。
+请到 [GitHub Releases（正式安装包）](https://github.com/LijunZhang-work/code-runtime-analyzer/releases/latest) 下载最新的 `Code-Runtime-Analyzer-Setup-v*.exe`，双击安装。
 
-**不需要安装 Node.js，不需要运行 npm，也不需要下载绿色的 `Code → Download ZIP` 源码包。** `.vsix` 已经包含扩展、内置后台和网页工作台。
+安装程序会一起安装：
+
+- 独立后台核心系统；
+- Web 工作台；
+- OpenCode / AI 使用的 MCP；
+- VS Code 扩展；
+- 工具自己的 Node.js 运行时。
+
+**不需要另外安装 Node.js，不需要运行 npm，也不要下载绿色的 `Code → Download ZIP` 源码包。** Release 中单独的 `.vsix` 只用于扩展更新或备用体验，不是完整产品安装包。
+
+```text
+                    OpenCode + AI
+                          │ MCP
+                          ▼
+VS Code 扩展  ◀──── 独立后台核心 ────▶ Web 工作台
+                          │
+             字典 / CSV / Clang / 模块 / 缓存
+```
 
 ## 第一次接触？只看这里
 
@@ -16,7 +33,7 @@
 
 | 你现在想做什么 | 应该看哪篇 |
 | --- | --- |
-| 我还没有安装，想要最简单的安装步骤 | **[工具使用指南：安装扩展](docs/工具使用指南.md#一先安装-vs-code-扩展普通用户不需要-npm)** |
+| 我还没有安装，想要最简单的安装步骤 | **[工具使用指南：统一安装](docs/工具使用指南.md)** |
 | 我第一次使用，完全不知道从哪里开始 | **[新手从这里开始](docs/新手从这里开始.md)** |
 | 我已经安装了工具，想知道右侧面板怎么点 | **[工具使用指南](docs/工具使用指南.md)** |
 | 我要给自己的产品新增一份字段字典 | **[字段字典填写指南](docs/字段字典填写说明.md)** |
@@ -75,7 +92,7 @@ npm run prepare:extension
 
 它会把后端、字典和网页构建结果放进扩展包需要的位置。
 
-提交一个形如 `v0.9.2` 的版本标签后，GitHub 会自动制作 Release 和 `.vsix` 安装包。维护流程见 [GitHub 发布清单](docs/GitHub发布清单.md)。普通使用者不需要看这篇，也不需要自己提交 GitHub。
+提交一个形如 `v0.10.0` 的版本标签后，GitHub 会自动制作 Release，同时生成 Windows 统一安装程序和单独的 `.vsix`。维护流程见 [GitHub 发布清单](docs/GitHub发布清单.md)。普通使用者不需要看这篇，也不需要自己提交 GitHub。
 
 ## 项目中各文件夹是干什么的
 
@@ -89,7 +106,7 @@ npm run prepare:extension
 
 ## 已验证的状态
 
-- 后端自动测试：46 项全部通过；
+- 后端自动测试：49 项全部通过；
 - VS Code 扩展：编译通过；
 - 网页工作台：检查和生产构建通过；
 - 2048 C++ 演示：编译并生成 CSV 成功；

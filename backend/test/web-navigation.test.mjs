@@ -52,3 +52,61 @@ test('web navigation is accepted only for the VS Code window session that opened
     assert.equal(received.length, 1);
   });
 });
+
+test('standalone backend binds a web page back to the VS Code window through a bounded session queue', async () => {
+  await withServer({}, async (baseUrl) => {
+    const registrationResponse = await fetch(`${baseUrl}/api/web/sessions/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientName: 'VS Code test', workspaceRoot: 'E:/Product_B_log' })
+    });
+    assert.equal(registrationResponse.status, 201);
+    const registration = await registrationResponse.json();
+    assert.match(registration.windowSessionId, /^[0-9a-f-]{36}$/i);
+
+    const waiting = fetch(`${baseUrl}/api/web/sessions/poll`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ windowSessionId: registration.windowSessionId, timeoutMs: 2_000 })
+    }).then((response) => response.json());
+
+    const openResponse = await fetch(`${baseUrl}/api/web/open-in-vscode`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        windowSessionId: registration.windowSessionId,
+        filePath: 'E:/Product_B_log/examples/boss_control.cpp',
+        workspaceRoot: 'E:/Product_B_log',
+        line: 18,
+        column: 7
+      })
+    });
+    assert.equal(openResponse.status, 202);
+    assert.deepEqual(await waiting, {
+      status: 'event',
+      location: {
+        filePath: 'E:/Product_B_log/examples/boss_control.cpp',
+        workspaceRoot: 'E:/Product_B_log',
+        line: 18,
+        column: 7
+      }
+    });
+
+    const unregisterResponse = await fetch(`${baseUrl}/api/web/sessions/unregister`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ windowSessionId: registration.windowSessionId })
+    });
+    assert.deepEqual(await unregisterResponse.json(), { removed: true });
+
+    const rejected = await fetch(`${baseUrl}/api/web/open-in-vscode`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        windowSessionId: registration.windowSessionId,
+        filePath: 'E:/Product_B_log/examples/boss_control.cpp'
+      })
+    });
+    assert.equal(rejected.status, 409);
+  });
+});

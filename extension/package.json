@@ -1,7 +1,7 @@
 {
   "name": "cpp-csv-diagnostics",
   "displayName": "C/C++ Historical Diagnostics",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -50,7 +50,8 @@
     "configuration": {
       "title": "C/C++ Historical Diagnostics",
       "properties": {
-        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "诊断后端地址。保留默认值时，每个 VS Code 窗口会在动态本地端口启动独立内置后端；填写自定义地址时只连接该服务。" },
+        "cppCsvDiagnostics.backendMode": { "type": "string", "enum": ["auto", "standalone", "embedded"], "enumDescriptions": ["优先连接独立后台，未安装时使用扩展内置备用后台", "只连接独立后台，连接失败时明确报错", "只使用扩展内置备用后台"], "default": "auto", "description": "后台连接方式。统一安装版使用独立后台；内置后台只用于单独安装 VSIX 时的备用体验。" },
+        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "独立 Code Runtime Analyzer 后台地址。统一安装版保持默认值即可。" },
         "cppCsvDiagnostics.compileCommandsPath": { "type": "string", "default": "", "description": "可选的 compile_commands.json 路径。为空时自动在工作区查找（优先根目录和 build 目录）；找到多个时会提示选择并记住当前工作区的选择。" },
         "cppCsvDiagnostics.clangdPath": { "type": "string", "default": "", "description": "可选的 clangd 可执行文件路径。为空时优先使用编译器同目录的 clangd，再尝试系统 PATH。" },
         "cppCsvDiagnostics.functionNames": { "type": "array", "items": { "type": "string" }, "default": [], "description": "可选的函数名限制；为空时由后端发现当前文件中的函数候选，再由 Clang 逐个验证。" }

@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { createDiagnosticServer } from './server.mjs';
+import { API_VERSION, DEFAULT_BACKEND_URL, PRODUCT_VERSION } from './runtime-info.mjs';
 
 /**
  * OpenCode-facing MCP adapter.
@@ -11,26 +11,31 @@ import { createDiagnosticServer } from './server.mjs';
  * and stale-data protection in one place instead of creating a second, subtly
  * different implementation for AI clients.
  */
-async function startLocalApi() {
-  const server = createDiagnosticServer();
-  await new Promise((resolvePromise, rejectPromise) => {
-    const onError = (error) => {
-      server.off('error', onError);
-      rejectPromise(error);
-    };
-    server.once('error', onError);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', onError);
-      resolvePromise();
-    });
+async function connectSharedApi(baseUrl) {
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/health`);
+  } catch (error) {
+    throw new Error(`无法连接 Code Runtime Analyzer 后台 ${baseUrl}。请先启动已安装的后台系统。`, { cause: error });
+  }
+  const health = await response.json().catch(() => ({}));
+  if (!response.ok || health.product !== 'code-runtime-analyzer' || health.apiVersion !== API_VERSION) {
+    throw new Error(`后台版本不兼容：需要 API ${API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。请更新统一安装包。`);
+  }
+  const registration = await postJson(baseUrl, '/api/integrations/register', {
+    clientType: 'mcp',
+    clientName: process.env.CODE_RUNTIME_ANALYZER_MCP_CLIENT_NAME || 'OpenCode / AI MCP'
   });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('无法取得本地诊断服务端口');
+  const heartbeatIntervalMs = Math.max(10_000, Number(registration.heartbeatIntervalMs) || 30_000);
+  const heartbeat = setInterval(() => {
+    void postJson(baseUrl, '/api/integrations/heartbeat', { clientId: registration.clientId }).catch(() => undefined);
+  }, heartbeatIntervalMs);
+  heartbeat.unref();
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl,
     async close() {
-      if (server.listening) await new Promise((resolvePromise) => server.close(resolvePromise));
-      await server.closeDiagnosticServices?.();
+      clearInterval(heartbeat);
+      await postJson(baseUrl, '/api/integrations/unregister', { clientId: registration.clientId }).catch(() => undefined);
     }
   };
 }
@@ -67,9 +72,11 @@ const revisionInput = {
   dataRevision: z.string().min(1).describe('由 load_diagnostic_data 返回的数据版本；数据重新加载后必须使用新值')
 };
 
-export async function createDiagnosticsMcp() {
-  const api = await startLocalApi();
-  const mcp = new McpServer({ name: 'code-runtime-analyzer', version: '0.9.2' });
+export async function createDiagnosticsMcp({
+  baseUrl = (process.env.CODE_RUNTIME_ANALYZER_URL || DEFAULT_BACKEND_URL).replace(/\/$/, '')
+} = {}) {
+  const api = await connectSharedApi(baseUrl);
+  const mcp = new McpServer({ name: 'code-runtime-analyzer', version: PRODUCT_VERSION });
 
   mcp.registerTool('diagnostics_list_dictionaries', {
     title: '列出字段字典',

@@ -4,21 +4,31 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { createDiagnosticServer } from '../src/server.mjs';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const backendDirectory = resolve(testDirectory, '..');
 
 test('MCP exposes the bounded diagnostics tool set over stdio', async (t) => {
+  const backend = createDiagnosticServer();
+  await new Promise((resolvePromise, rejectPromise) => {
+    backend.once('error', rejectPromise);
+    backend.listen(0, '127.0.0.1', resolvePromise);
+  });
+  const address = backend.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['src/mcp-server.mjs'],
     cwd: backendDirectory,
+    env: { ...process.env, CODE_RUNTIME_ANALYZER_URL: baseUrl },
     stderr: 'pipe'
   });
   const client = new Client({ name: 'diagnostics-test-client', version: '1.0.0' });
   t.after(async () => {
     await client.close().catch(() => undefined);
     await transport.close().catch(() => undefined);
+    await new Promise((resolvePromise) => backend.close(resolvePromise));
   });
 
   await client.connect(transport);
@@ -35,4 +45,7 @@ test('MCP exposes the bounded diagnostics tool set over stdio', async (t) => {
     'diagnostics_load_data',
     'diagnostics_make_vscode_link'
   ]);
+  const status = await fetch(`${baseUrl}/api/integrations/status`, { method: 'POST' }).then((response) => response.json());
+  assert.equal(status.aiClients.length, 1);
+  assert.equal(status.aiClients[0].clientType, 'mcp');
 });

@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleDot,
+  Copy,
   Code2,
   Database,
   ExternalLink,
@@ -89,7 +90,7 @@ type WorkbenchContext = {
 
 type FunctionRole = 'current' | 'caller' | 'callee' | 'linked' | 'external'
 type FlowData = GraphNode & { selected: boolean; degree: number; role: FunctionRole; reduceMotion: boolean }
-type WorkspaceView = 'function' | 'modules'
+type WorkspaceView = 'function' | 'modules' | 'integrations'
 type FunctionTab = 'overview' | 'calls' | 'time' | 'evidence'
 type ModuleFunction = { functionName: string; relativePath?: string; line?: number }
 type ProductModule = { id: string; name: string; description?: string; functions: ModuleFunction[] }
@@ -125,6 +126,22 @@ type RunSummary = {
 type ReplaySummary = { returnedCount: number; totalRows: number; sampled?: boolean; times: Array<{ requestedTime: string }> }
 type EvidenceContext = { run?: RunSummary; fields: MappingDescriptor[]; replay: ReplaySummary }
 type Notice = { kind: 'error' | 'success'; message: string }
+type ConnectedClient = { clientType?: string; clientName: string; connectedAt: string; lastSeenAt: string; workspaceRoot?: string }
+type IntegrationStatus = {
+  product: string
+  version: string
+  apiVersion: string
+  runtimeMode: string
+  vscodeWindows: ConnectedClient[]
+  aiClients: ConnectedClient[]
+  capabilities: string[]
+}
+type OpenCodeConfiguration = {
+  serverName: string
+  current: Record<string, unknown>
+  legacy: Record<string, unknown>
+  runtime: { installRoot: string; nodePath: string; mcpPath: string }
+}
 
 const DEMO_SOURCE = 'src/energy_dispatch_demo.cpp'
 const demoNode = (label: string, signature: string, line: number): GraphNode => ({
@@ -478,6 +495,9 @@ function App() {
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContext | undefined>()
   const [evidenceLoading, setEvidenceLoading] = useState(Boolean(context.runRecordId && context.dataRevision))
   const [evidenceError, setEvidenceError] = useState<string | undefined>()
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | undefined>()
+  const [openCodeConfiguration, setOpenCodeConfiguration] = useState<OpenCodeConfiguration | undefined>()
+  const [integrationsLoading, setIntegrationsLoading] = useState(false)
   const functionSearchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -528,6 +548,26 @@ function App() {
   }, [context.workspaceRoot])
 
   useEffect(() => { void loadModules() }, [loadModules])
+
+  const loadIntegrations = useCallback(async () => {
+    setIntegrationsLoading(true)
+    try {
+      const [status, configuration] = await Promise.all([
+        postJson<IntegrationStatus>('/api/integrations/status', {}),
+        postJson<OpenCodeConfiguration>('/api/integrations/opencode-config', {}),
+      ])
+      setIntegrationStatus(status)
+      setOpenCodeConfiguration(configuration)
+    } catch (reason) {
+      setNotice({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) })
+    } finally {
+      setIntegrationsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (workspaceView === 'integrations') void loadIntegrations()
+  }, [loadIntegrations, workspaceView])
 
   useEffect(() => {
     if (!context.runRecordId || !context.dataRevision) return
@@ -653,12 +693,20 @@ function App() {
     setWorkspaceView('modules')
   }, [])
 
+  const copyConfiguration = useCallback((configuration: Record<string, unknown>, label: string) => {
+    void navigator.clipboard.writeText(JSON.stringify(configuration, null, 2)).then(() => {
+      setNotice({ kind: 'success', message: `已复制${label}配置，可以合并到 OpenCode 配置文件。` })
+    }).catch((reason: unknown) => {
+      setNotice({ kind: 'error', message: `复制失败：${reason instanceof Error ? reason.message : String(reason)}` })
+    })
+  }, [])
+
   return (
     <main className={`app-shell ${workspaceView === 'function' && inspectorOpen && selected ? 'is-inspector-open' : ''}`}>
       <header className="app-header">
         <div className="brand-lockup"><span className="brand-glyph"><Box size={18} /></span><span>代码结构工作台</span></div>
         <div className="header-actions">
-          <label className="function-search"><Search size={16} /><input ref={functionSearchRef} value={functionFilter} onChange={(event) => setFunctionFilter(event.target.value)} placeholder="搜索函数（Ctrl+K）" aria-label="搜索当前文件函数" /></label>
+          {workspaceView === 'integrations' ? <div className="header-context"><Cable size={16} /><span>独立后台与 AI 接入</span></div> : <label className="function-search"><Search size={16} /><input ref={functionSearchRef} value={functionFilter} onChange={(event) => setFunctionFilter(event.target.value)} placeholder="搜索函数（Ctrl+K）" aria-label="搜索当前文件函数" /></label>}
           {workspaceView === 'function' && functionTab === 'calls' ? (
             <button type="button" className="header-reset" onClick={resetGraphView}><RotateCcw size={15} />视图重置</button>
           ) : null}
@@ -671,9 +719,10 @@ function App() {
           <button className={workspaceView === 'function' && functionTab !== 'time' && functionTab !== 'evidence' ? 'is-active' : ''} onClick={() => { setWorkspaceView('function'); setFunctionTab('calls') }}><Braces size={17} /><span>函数</span></button>
           <button className={workspaceView === 'modules' ? 'is-active' : ''} onClick={() => setWorkspaceView('modules')}><Layers3 size={17} /><span>产品功能模块</span></button>
           <button className={workspaceView === 'function' && (functionTab === 'time' || functionTab === 'evidence') ? 'is-active' : ''} onClick={() => { setWorkspaceView('function'); setFunctionTab('time') }}><Database size={17} /><span>历史数据</span></button>
+          <button className={workspaceView === 'integrations' ? 'is-active' : ''} onClick={() => setWorkspaceView('integrations')}><Cable size={17} /><span>AI 与扩展</span></button>
         </nav>
 
-        <section className="rail-section">
+        {workspaceView !== 'integrations' ? <section className="rail-section">
           <div className="rail-section__title"><span>函数列表</span><em>{filteredDefinitions.length}/{definitions.length}</em></div>
           <label className="rail-search"><Search size={15} /><input value={functionFilter} onChange={(event) => setFunctionFilter(event.target.value)} placeholder="筛选函数" aria-label="筛选当前文件函数" /></label>
           <div className="function-list">
@@ -683,7 +732,7 @@ function App() {
               </button>
             )) : <p className="rail-empty">没有匹配的函数。</p>}
           </div>
-        </section>
+        </section> : <section className="rail-section integration-rail"><div className="rail-section__title"><span>后台核心能力</span></div>{integrationStatus?.capabilities.map((capability) => <div key={capability} className="integration-rail__item"><CheckCircle2 size={14} /><span>{capability}</span></div>)}</section>}
 
         <section className="rail-footnote">
           <div><CircleDot size={14} /><span>{isBoundToVsCode ? '已绑定打开本页的 VS Code 窗口' : hasCodeContext ? '已读取代码上下文，未绑定定位窗口' : '未绑定 VS Code：仅示例界面'}</span></div>
@@ -717,7 +766,7 @@ function App() {
             onCreateModule={() => { setWorkspaceView('modules'); openModuleEditor() }}
             onResetGraph={resetGraphView}
           />
-        ) : (
+        ) : workspaceView === 'modules' ? (
           <ModulesWorkspace
             modules={modules}
             selectedModule={selectedModule}
@@ -733,7 +782,7 @@ function App() {
             onRefresh={() => void loadModules()}
             onSelectFunction={selectFunction}
           />
-        )}
+        ) : <IntegrationsWorkspace status={integrationStatus} configuration={openCodeConfiguration} loading={integrationsLoading} onRefresh={() => void loadIntegrations()} onCopy={copyConfiguration} />}
       </section>
 
       <AnimatePresence initial={false}>
@@ -795,9 +844,48 @@ function App() {
       <AnimatePresence>
         {notice && <motion.div className={`notice-toast notice-toast--${notice.kind}`} initial={prefersReducedMotion ? false : { opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={prefersReducedMotion ? undefined : { opacity: 0, y: 10 }}><div><strong>{notice.kind === 'error' ? '网页工作台提示' : '操作完成'}</strong><span>{notice.message}</span></div><button aria-label="关闭提示" onClick={() => setNotice(undefined)}><X size={15} /></button></motion.div>}
       </AnimatePresence>
-      <footer className="app-footer"><span>当前显示：{workspaceView === 'function' ? functionTab === 'calls' ? '二维关系图' : functionTab === 'time' ? '历史数据' : functionTab === 'evidence' ? '证据来源' : '函数概览' : '产品功能模块'}</span><span>当前关系节点 {flow.nodes.length} ／ 调用边 {flow.edges.length}</span><span>数据时间点：{context.runRecordId ? formatTime(context.requestedTime) : '未加载 CSV'}</span></footer>
+      <footer className="app-footer"><span>当前显示：{workspaceView === 'function' ? functionTab === 'calls' ? '二维关系图' : functionTab === 'time' ? '历史数据' : functionTab === 'evidence' ? '证据来源' : '函数概览' : workspaceView === 'modules' ? '产品功能模块' : 'AI 与扩展'}</span><span>{workspaceView === 'integrations' ? `VS Code ${integrationStatus?.vscodeWindows.length ?? 0} ／ AI ${integrationStatus?.aiClients.length ?? 0}` : `当前关系节点 ${flow.nodes.length} ／ 调用边 ${flow.edges.length}`}</span><span>数据时间点：{context.runRecordId ? formatTime(context.requestedTime) : '未加载 CSV'}</span></footer>
     </main>
   )
+}
+
+function IntegrationsWorkspace({ status, configuration, loading, onRefresh, onCopy }: {
+  status?: IntegrationStatus
+  configuration?: OpenCodeConfiguration
+  loading: boolean
+  onRefresh: () => void
+  onCopy: (configuration: Record<string, unknown>, label: string) => void
+}) {
+  return <div className="integrations-workspace">
+    <section className="integrations-hero">
+      <div><span className="identity-chip"><Cable size={14} />平台核心</span><h2>一个后台，连接所有入口</h2><p>VS Code、网页和 OpenCode / AI 共用字典、CSV、代码分析和缓存，不会各自保存一套互相打架的数据。</p></div>
+      <button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? 'spin' : ''} size={16} />{loading ? '正在检查' : '刷新连接状态'}</button>
+    </section>
+    <section className="integration-metrics">
+      <article><span>后台版本</span><strong>{status?.version ?? '正在读取'}</strong><small>API {status?.apiVersion ?? '—'} · {status?.runtimeMode === 'standalone' ? '独立后台' : '扩展备用后台'}</small></article>
+      <article><span>VS Code 窗口</span><strong>{status?.vscodeWindows.length ?? 0}</strong><small>每个网页只回到发起它的窗口</small></article>
+      <article><span>OpenCode / AI</span><strong>{status?.aiClients.length ?? 0}</strong><small>{status?.aiClients.length ? '当前有 MCP 客户端在线' : '等待 OpenCode 启动 MCP'}</small></article>
+    </section>
+    <section className="integration-grid">
+      <article className="integration-card">
+        <div className="integration-card__head"><div><Cable size={18} /><span><strong>VS Code 扩展</strong><small>代码行内展示与窗口定位</small></span></div><em className={status?.vscodeWindows.length ? 'is-online' : ''}>{status?.vscodeWindows.length ? '已连接' : '未连接'}</em></div>
+        <div className="client-list">{status?.vscodeWindows.length ? status.vscodeWindows.map((client, index) => <div key={`${client.connectedAt}-${index}`}><CheckCircle2 size={14} /><span><strong>{client.clientName}</strong><small>{client.workspaceRoot ?? '未报告工作区'}</small></span></div>) : <p>打开 VS Code 并启用扩展后会在这里出现。</p>}</div>
+      </article>
+      <article className="integration-card">
+        <div className="integration-card__head"><div><Activity size={18} /><span><strong>OpenCode + AI 模型</strong><small>通过 MCP 使用同一个后台</small></span></div><em className={status?.aiClients.length ? 'is-online' : ''}>{status?.aiClients.length ? '已连接' : '可配置'}</em></div>
+        <div className="client-list">{status?.aiClients.length ? status.aiClients.map((client, index) => <div key={`${client.connectedAt}-${index}`}><CheckCircle2 size={14} /><span><strong>{client.clientName}</strong><small>最近心跳 {new Date(client.lastSeenAt).toLocaleTimeString('zh-CN', { hour12: false })}</small></span></div>) : <p>配置后，AI 可以查询历史快照、趋势、字段映射和函数调用关系。</p>}</div>
+      </article>
+    </section>
+    <section className="opencode-config-card">
+      <div><p>OpenCode 接入</p><h3>使用安装包里的 MCP，不需要 npm</h3><span>配置中的命令已经指向当前电脑安装好的运行时。复制时只合并这一项，不会覆盖其他项目已有的 MCP。</span></div>
+      <code>{configuration?.runtime.mcpPath ?? '正在读取安装路径…'}</code>
+      <div className="opencode-actions">
+        <button className="primary-button" disabled={!configuration} onClick={() => configuration && onCopy(configuration.current, '新版 OpenCode')}><Copy size={15} />复制新版配置</button>
+        <button className="secondary-button" disabled={!configuration} onClick={() => configuration && onCopy(configuration.legacy, 'OpenCode 1.x')}><Copy size={15} />复制 1.x 配置</button>
+      </div>
+      <div className="integration-safety"><ShieldCheck size={16} /><span>后台仅监听本机 127.0.0.1；MCP 只做适配，数据解析和匹配规则始终由后台统一执行。</span></div>
+    </section>
+  </div>
 }
 
 function InspectorMetric({ label, value, suffix }: { label: string; value: number; suffix?: string }) {

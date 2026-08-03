@@ -193,7 +193,10 @@ let selection: ReplaySelection | undefined;
 let dictionaryFolder: DictionaryFolderState = {};
 let embeddedBackend: Worker | undefined;
 let embeddedBackendUrl: string | undefined;
-let embeddedBackendSessionId: string | undefined;
+let activeBackendUrl: string | undefined;
+let backendWindowSessionId: string | undefined;
+let backendConnectionMode: 'standalone' | 'embedded' | undefined;
+let standaloneSessionAbort: AbortController | undefined;
 let webLocationListener: ((location: WebOpenLocation) => void) | undefined;
 let backendStartup: Promise<void> = Promise.resolve();
 let backendStartupError: Error | undefined;
@@ -201,7 +204,7 @@ const REPLAY_STATE_KEY = 'replaySelection';
 const DICTIONARY_FOLDER_STATE_KEY = 'dictionaryFolderSelection';
 const COMPILE_COMMANDS_STATE_KEY = 'compileCommandsPathSelection';
 const DEFAULT_BACKEND_URL = 'http://127.0.0.1:47831';
-const EXPECTED_BACKEND_API_VERSION = '0.9';
+const EXPECTED_BACKEND_API_VERSION = '0.10';
 const hoverEvidence = new Map<string, HoverEvidence[]>();
 const decoration = vscode.window.createTextEditorDecorationType({
   after: {
@@ -220,7 +223,7 @@ function settings() {
 }
 
 function backendUrl(): string {
-  return (embeddedBackendUrl ?? settings().get<string>('backendUrl', DEFAULT_BACKEND_URL)).replace(/\/$/, '');
+  return (activeBackendUrl ?? settings().get<string>('backendUrl', DEFAULT_BACKEND_URL)).replace(/\/$/, '');
 }
 
 class BackendRequestError extends Error {
@@ -232,7 +235,11 @@ class BackendRequestError extends Error {
 async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   await backendStartup;
   if (backendStartupError) throw backendStartupError;
-  const response = await fetch(`${backendUrl()}${path}`, {
+  return fetchJsonAt<T>(backendUrl(), path, body, signal);
+}
+
+async function fetchJsonAt<T>(url: string, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(`${url}${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal
   });
   const result = await response.json() as T & { error?: string };
@@ -240,19 +247,24 @@ async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): P
   return result;
 }
 
-async function backendIsHealthy(url: string, timeoutMs = 1000): Promise<boolean> {
+type BackendHealth = { product?: string; apiVersion?: string; version?: string; runtimeMode?: string };
+
+async function backendHealth(url: string, timeoutMs = 1000): Promise<BackendHealth | undefined> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${url}/health`, { signal: controller.signal });
-    if (!response.ok) return false;
-    const health = await response.json() as { apiVersion?: string };
-    return health.apiVersion === EXPECTED_BACKEND_API_VERSION;
+    if (!response.ok) return undefined;
+    return await response.json() as BackendHealth;
   } catch {
-    return false;
+    return undefined;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function compatibleBackend(health: BackendHealth | undefined): boolean {
+  return health?.product === 'code-runtime-analyzer' && health.apiVersion === EXPECTED_BACKEND_API_VERSION;
 }
 
 function isDefaultBackendUrl(url: string): boolean {
@@ -304,26 +316,88 @@ async function startEmbeddedBackend(context: vscode.ExtensionContext): Promise<v
     });
     embeddedBackend = worker;
     embeddedBackendUrl = `http://${ready.host}:${ready.port}`;
-    embeddedBackendSessionId = webSessionId;
+    activeBackendUrl = embeddedBackendUrl;
+    backendWindowSessionId = webSessionId;
+    backendConnectionMode = 'embedded';
     worker.on('message', (message: { type?: string; location?: WebOpenLocation }) => {
       if (message.type === 'web-open-function' && message.location) webLocationListener?.(message.location);
     });
   } catch (error) {
-    embeddedBackendSessionId = undefined;
+    backendWindowSessionId = undefined;
+    backendConnectionMode = undefined;
+    activeBackendUrl = undefined;
     await worker.terminate();
     throw error;
   }
 }
 
+async function closeStandaloneSession(): Promise<void> {
+  const controller = standaloneSessionAbort;
+  const sessionId = backendConnectionMode === 'standalone' ? backendWindowSessionId : undefined;
+  const url = backendConnectionMode === 'standalone' ? activeBackendUrl : undefined;
+  standaloneSessionAbort = undefined;
+  controller?.abort();
+  if (url && sessionId) {
+    await fetchJsonAt(url, '/api/web/sessions/unregister', { windowSessionId: sessionId }).catch(() => undefined);
+  }
+  if (backendConnectionMode === 'standalone') {
+    activeBackendUrl = undefined;
+    backendWindowSessionId = undefined;
+    backendConnectionMode = undefined;
+  }
+}
+
+async function connectStandaloneSession(url: string): Promise<void> {
+  await closeStandaloneSession();
+  const registered = await fetchJsonAt<{ windowSessionId: string }>(url, '/api/web/sessions/register', {
+    clientName: 'VS Code 扩展',
+    workspaceRoot: workspaceRoot()
+  });
+  activeBackendUrl = url;
+  backendWindowSessionId = registered.windowSessionId;
+  backendConnectionMode = 'standalone';
+  const controller = new AbortController();
+  standaloneSessionAbort = controller;
+  void (async () => {
+    while (!controller.signal.aborted && backendWindowSessionId === registered.windowSessionId) {
+      try {
+        const result = await fetchJsonAt<{ status: string; location?: WebOpenLocation }>(url, '/api/web/sessions/poll', {
+          windowSessionId: registered.windowSessionId,
+          timeoutMs: 20_000
+        }, controller.signal);
+        if (result.status === 'event' && result.location) webLocationListener?.(result.location);
+        if (result.status === 'missing' || result.status === 'closed') break;
+      } catch (error) {
+        if (controller.signal.aborted) break;
+        await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1_000));
+      }
+    }
+  })();
+}
+
 async function ensureBackendAvailable(context: vscode.ExtensionContext): Promise<void> {
   const configuredUrl = settings().get<string>('backendUrl', DEFAULT_BACKEND_URL).replace(/\/$/, '');
-  if (!isDefaultBackendUrl(configuredUrl)) {
-    if (await backendIsHealthy(configuredUrl)) return;
-    throw new Error(`无法连接已配置的诊断后端 ${configuredUrl}；请检查 cppCsvDiagnostics.backendUrl。`);
+  const mode = settings().get<'auto' | 'standalone' | 'embedded'>('backendMode', 'auto');
+  if (mode !== 'embedded') {
+    const health = await backendHealth(configuredUrl);
+    if (compatibleBackend(health)) {
+      await connectStandaloneSession(configuredUrl);
+      return;
+    }
+    if (health && !compatibleBackend(health)) {
+      throw new Error(`已找到后台 ${configuredUrl}，但版本不兼容：需要 API ${EXPECTED_BACKEND_API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。`);
+    }
+    if (mode === 'standalone' || !isDefaultBackendUrl(configuredUrl)) {
+      throw new Error(`无法连接独立后台 ${configuredUrl}。请启动 Code Runtime Analyzer 后台，或把 backendMode 改为“自动”。`);
+    }
   }
-  if (embeddedBackendUrl && await backendIsHealthy(embeddedBackendUrl)) return;
+  if (embeddedBackendUrl && compatibleBackend(await backendHealth(embeddedBackendUrl))) {
+    activeBackendUrl = embeddedBackendUrl;
+    backendConnectionMode = 'embedded';
+    return;
+  }
   await startEmbeddedBackend(context);
-  if (!embeddedBackendUrl || !await backendIsHealthy(embeddedBackendUrl, 2000)) {
+  if (!embeddedBackendUrl || !compatibleBackend(await backendHealth(embeddedBackendUrl, 2000))) {
     throw new Error('扩展已尝试启动本地诊断后端，但健康检查仍未通过。');
   }
 }
@@ -332,7 +406,11 @@ async function closeEmbeddedBackend(): Promise<void> {
   const worker = embeddedBackend;
   embeddedBackend = undefined;
   embeddedBackendUrl = undefined;
-  embeddedBackendSessionId = undefined;
+  if (backendConnectionMode === 'embedded') {
+    activeBackendUrl = undefined;
+    backendWindowSessionId = undefined;
+    backendConnectionMode = undefined;
+  }
   if (!worker) return;
   const stopped = new Promise<void>((resolvePromise) => {
     const done = () => resolvePromise();
@@ -1062,8 +1140,8 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       await backendStartup;
       if (backendStartupError) throw backendStartupError;
-      if (!embeddedBackendUrl || !embeddedBackendSessionId) {
-        return void vscode.window.showWarningMessage('网页工作台需要扩展内置的本地后端，才能与当前 VS Code 窗口一对一绑定。请将 cppCsvDiagnostics.backendUrl 保持为默认值。');
+      if (!activeBackendUrl || !backendWindowSessionId) {
+        return void vscode.window.showWarningMessage('当前后台还没有建立 VS Code 窗口会话，请重新加载窗口后再试。');
       }
       const compileCommandsPath = await discoverCompileCommandsPath(context);
       if (!compileCommandsPath) {
@@ -1074,7 +1152,7 @@ export function activate(context: vscode.ExtensionContext): void {
       url.searchParams.set('filePath', editor.document.uri.fsPath);
       url.searchParams.set('compileCommandsPath', compileCommandsPath);
       url.searchParams.set('focusLine', String(editor.selection.active.line + 1));
-      url.searchParams.set('windowSessionId', embeddedBackendSessionId);
+      url.searchParams.set('windowSessionId', backendWindowSessionId);
       if (dictionaryFolder.dictionaryId) url.searchParams.set('dictionaryId', dictionaryFolder.dictionaryId);
       if (dictionaryFolder.dictionaryName) url.searchParams.set('dictionaryName', dictionaryFolder.dictionaryName);
       if (selection?.runRecordId) url.searchParams.set('runRecordId', selection.runRecordId);
@@ -1589,5 +1667,6 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  await closeStandaloneSession();
   await closeEmbeddedBackend();
 }

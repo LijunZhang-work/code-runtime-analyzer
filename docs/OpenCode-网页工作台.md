@@ -1,84 +1,87 @@
-# OpenCode 使用说明
+# OpenCode、AI 与网页工作台
 
-这篇写给想让 OpenCode 查询历史数据或代码调用关系的人。如果你只使用 VS Code 右侧面板，可以不看这篇。
+这篇写给想让 OpenCode 或其他 AI 查询代码和历史运行数据的人。普通用户不需要安装 Node.js，也不需要执行 npm。
 
-## 一、OpenCode 在这里起什么作用
+## 一句话说明
 
-OpenCode 不会替代 VS Code 扩展。它只是通过 MCP 调用同一个本地后端，让 AI 可以：
-
-- 列出有哪些产品字典；
-- 加载一个 CSV 文件夹；
-- 查询有哪些历史时间点；
-- 查询某个字段在某个时间的值；
-- 查询一个字段的变化趋势；
-- 分析当前 C/C++ 文件中的直接函数调用关系。
-
-VS Code、网页和 OpenCode 使用同一套字典与匹配规则，不会各自重新猜一遍。
-
-## 二、使用前准备
-
-1. 已经按照根目录 README 安装了后端依赖；
-2. OpenCode 已经安装；
-3. 从这个仓库根目录启动 OpenCode；
-4. 仓库根目录存在 `opencode.json`。
-
-当前电脑的 OpenCode 在 WSL 中，而 Node.js 安装在 Windows，所以 `opencode.json` 使用 `node.exe`。这套配置已经在 WSL OpenCode 1.17.11 中实测连接成功。
-
-## 三、先检查是否连接成功
-
-在 WSL 中进入你克隆本仓库的位置：
-
-```bash
-cd /mnt/<盘符>/<你的克隆目录>
-opencode mcp list
-```
-
-如果看到：
+安装 `Code-Runtime-Analyzer-Setup-v*.exe` 后，电脑上会有一套独立运行的“代码运行分析后台”。VS Code 扩展、网页和 OpenCode/AI 都连接这一套后台，因此它们看到的是同一套字典、CSV、代码分析结果和缓存。
 
 ```text
-cpp-csv-diagnostics connected
+VS Code 扩展 ─┐
+网页工作台   ─┼─→ Code Runtime Analyzer 后台
+OpenCode/AI ─┘       ├─ 产品字典
+                     ├─ 本次 CSV
+                     ├─ C/C++ 代码分析
+                     └─ 以后增加的模块级能力
 ```
 
-就表示可以用了。
+后台不是只为 VS Code 扩展服务的小附件，它才是产品核心。以后接入新的编辑器、网页能力或 AI 工具，不需要复制一套分析逻辑。
 
-如果显示 `Executable not found: node`，说明 OpenCode 在 WSL、Node.js 在 Windows。确认 `opencode.json` 中使用的是 `node.exe`。
+## 普通用户怎样使用
 
-如果另一台电脑在 Linux 或 macOS 原生运行 OpenCode，把 `node.exe` 改成 `node`。
+1. 从 GitHub Releases 下载并运行 `Code-Runtime-Analyzer-Setup-v*.exe`。
+2. 安装完成后打开 VS Code，在右侧“历史诊断”面板加载产品字典和本次 CSV 文件夹。
+3. 点击“打开网页工作台”。从哪个 VS Code 窗口打开，网页就与哪个窗口绑定。
+4. 网页里的“在 VS Code 中定位”会回到这个窗口，不会再故意打开另一个窗口。
+5. 想接 OpenCode 时，进入网页左侧的“AI 与扩展”，复制与自己 OpenCode 版本相符的配置。
 
-## 四、可以怎样问 OpenCode
+安装程序已经包含后台、网页、MCP 服务、运行环境和 VS Code 扩展。普通用户不要从源码目录运行 `npm install`。
 
-不要一上来就说“帮我分析所有东西”。按下面顺序更容易得到明确结果：
+## OpenCode 怎样连接
 
-1. “列出当前可以使用的产品字典。”
-2. “使用 product-a 字典，加载 `/你的/CSV/文件夹`，代码仓是 `/你的/代码仓`。”
-3. “列出这批 CSV 可以查询的时间点。”
-4. “查询 `school::Student::age` 在时间点 XXX 的值和数据来源。”
-5. “显示这个字段的变化趋势。”
+网页“AI 与扩展”页面提供两份配置：
 
-查询函数调用关系时，需要同时提供：
+- “新版 OpenCode”：使用 `mcp.servers` 格式；
+- “OpenCode 1.x”：保留旧版 `mcp` 格式。
 
-- `compile_commands.json` 的位置；
-- 要分析的 `.c`、`.cc` 或 `.cpp` 文件；
-- 函数名或函数所在行。
+复制后放到当前代码仓自己的 OpenCode 配置中。不同 OpenCode 版本的配置位置可能不同，以 OpenCode 自己显示的配置文件位置为准。
 
-## 五、这些工具名是什么意思
+配置中的 MCP 程序不会再偷偷启动第二套后台。它只连接已经安装并正在运行的本机后台：
 
-普通用户不需要记住工具名，OpenCode 会选择。但排查问题时可以对照：
+```text
+http://127.0.0.1:47831
+```
 
-| 工具 | 大白话作用 |
+这个地址只监听本机，局域网或互联网中的其他电脑不能直接访问。
+
+如果 OpenCode 运行在 WSL 中，先确认 WSL 可以访问 Windows 的 `127.0.0.1:47831`。网页里的配置使用安装包自带的 Windows Node.js，不需要改动另一个项目，也不需要在 WSL 里另装一份本项目依赖。
+
+## 如何确认真的连上了
+
+1. 打开网页工作台的“AI 与扩展”。
+2. “后台核心”应显示已连接和版本号。
+3. OpenCode 启动 MCP 后，“OpenCode / AI 客户端”中应出现一个在线客户端。
+4. VS Code 窗口打开时，“VS Code 窗口”中应显示对应窗口。
+
+这个页面显示的是后台真实记录到的连接，不是装饰性的假状态。
+
+## OpenCode 可以做什么
+
+OpenCode 可以让 AI 调用这些真实能力：
+
+| 能力 | 大白话说明 |
 | --- | --- |
-| `diagnostics_list_dictionaries` | 看有哪些产品字典 |
-| `diagnostics_load_data` | 加载字典和这次 CSV 文件夹 |
-| `diagnostics_list_replay_times` | 看有哪些时间点 |
-| `diagnostics_list_fields` | 看字典已经确认了哪些代码字段 |
-| `diagnostics_get_snapshot` | 查某个时间点的值 |
-| `diagnostics_get_series` | 查一段时间的趋势 |
-| `diagnostics_get_call_graph` | 查直接函数调用关系 |
+| 列出产品字典 | 看后台有哪些产品可选 |
+| 加载数据 | 选择一套字典和本次 CSV 文件夹 |
+| 列出时间点 | 看日志里有哪些可回放时刻 |
+| 查询快照 | 查询某个时间点的字段值 |
+| 查询趋势 | 查询一个字段随时间怎样变化 |
+| 查询调用关系 | 分析当前 C/C++ 编译单元中的直接调用关系 |
 
-## 六、网页为什么要从 VS Code 打开
+例如可以按这个顺序问：
 
-从 VS Code 右侧面板点击“打开网页工作台”时，网页会记住是哪个 VS Code 窗口打开了它。
+1. “列出可以使用的产品字典。”
+2. “使用 ProductA 字典，加载这个 CSV 文件夹。”
+3. “列出可查询的时间点。”
+4. “查询 `school::Student::age` 在这个时间点的值和来源。”
+5. “显示这个字段最近一段时间的变化趋势。”
 
-这样网页中的“在当前 VS Code 中定位”才能回到原来的窗口。如果直接复制一个普通 `vscode://` 链接，操作系统可能新开另一个 VS Code 窗口。
+## 为什么网页要从 VS Code 打开
 
-网页只允许跳转到当前代码仓内部的文件，也只展示当前编译单元中能够确认的直接调用关系。这样做是为了大型项目的速度、准确性和可读性。
+后台会给每个 VS Code 窗口建立一个临时会话。网页地址带着这个会话编号，所以网页知道应该把定位请求发给哪一个窗口。
+
+如果直接从浏览器收藏夹打开普通网页，仍然能浏览数据，但没有来源窗口时，“在 VS Code 中定位”就无法判断应该回到哪个窗口。此时重新从目标 VS Code 窗口打开网页即可。
+
+## 维护者从源码运行
+
+只有开发和修改本工具时才需要根目录的 npm 命令。源码模式与安装版使用相同接口，但维护者应避免同时启动两个占用同一端口的后台。

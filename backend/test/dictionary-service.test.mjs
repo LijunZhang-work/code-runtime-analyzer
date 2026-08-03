@@ -187,7 +187,13 @@ test('dictionary HTTP endpoints list and load without using the default port', a
   const base = `http://127.0.0.1:${address.port}`;
   const healthResponse = await fetch(`${base}/health`);
   assert.equal(healthResponse.status, 200);
-  assert.deepEqual(await healthResponse.json(), { status: 'ok', version: '0.9.1', apiVersion: '0.9' });
+  const health = await healthResponse.json();
+  assert.equal(health.status, 'ok');
+  assert.equal(health.product, 'code-runtime-analyzer');
+  assert.equal(health.version, '0.10.0');
+  assert.equal(health.apiVersion, '0.10');
+  assert.equal(health.runtimeMode, 'standalone');
+  assert.ok(health.capabilities.includes('mcp-shared-core'));
   const listResponse = await fetch(`${base}/api/dictionaries/list`, { method: 'POST' });
   assert.equal(listResponse.status, 200);
   const listed = await listResponse.json();

@@ -6,6 +6,7 @@ if (!parentPort) throw new Error('worker-server.mjs 必须由 Worker 启动');
 const host = workerData?.host ?? '127.0.0.1';
 const port = Number(workerData?.port ?? 0);
 const server = createDiagnosticServer({
+  runtimeMode: 'embedded',
   webSessionId: workerData?.webSessionId,
   onWebOpen(location) {
     parentPort.postMessage({ type: 'web-open-function', location });

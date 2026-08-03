@@ -1,4 +1,4 @@
-name: 发布 VS Code 安装包
+name: 发布统一安装包
 
 on:
   push:
@@ -10,17 +10,17 @@ permissions:
 
 jobs:
   release:
-    name: 构建并发布 VSIX
-    runs-on: ubuntu-latest
+    name: 构建后台、Web、MCP 和 VS Code 安装包
+    runs-on: windows-latest
 
     steps:
       - name: 取出本次版本的源码
         uses: actions/checkout@v4
 
-      - name: 准备 Node.js 20
+      - name: 准备 Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: |
             backend/package-lock.json
@@ -28,22 +28,62 @@ jobs:
             web/package-lock.json
 
       - name: 安装构建依赖
-        run: |
-          npm --prefix backend ci
-          npm --prefix extension ci
-          npm --prefix web ci
+        shell: pwsh
+        run: npm run install:all
 
-      - name: 构建网页和扩展
-        run: |
-          npm run prepare:extension
-          npm --prefix extension run compile
+      - name: 执行完整检查
+        shell: pwsh
+        run: npm test
 
-      - name: 打包普通用户安装包
+      - name: 准备扩展内置备用后台
+        shell: pwsh
+        run: npm run prepare:extension
+
+      - name: 打包 VS Code 扩展
         working-directory: extension
+        shell: pwsh
         run: npx --yes @vscode/vsce package --no-yarn --out "../Code-Runtime-Analyzer-${{ github.ref_name }}.vsix"
 
-      - name: 创建 GitHub Release 并上传安装包
+      - name: 准备独立后台发行目录
+        shell: pwsh
+        env:
+          CRA_VSIX_PATH: ${{ github.workspace }}\Code-Runtime-Analyzer-${{ github.ref_name }}.vsix
+        run: npm run prepare:windows-distribution
+
+      - name: 安装成熟的开源 NSIS 打包工具
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: 构建 Windows 一键安装程序
+        shell: pwsh
+        run: |
+          $releaseVersion = '${{ github.ref_name }}'.TrimStart('v')
+          $sourceRoot = Join-Path '${{ github.workspace }}' 'build\distribution\windows'
+          $outputDir = Join-Path '${{ github.workspace }}' 'build\installer'
+          $vsixName = 'Code-Runtime-Analyzer-${{ github.ref_name }}.vsix'
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+          $makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
+          & $makensis "/DAPP_VERSION=$releaseVersion" "/DSOURCE_ROOT=$sourceRoot" "/DOUTPUT_DIR=$outputDir" "/DVSIX_NAME=$vsixName" 'installer\windows\CodeRuntimeAnalyzer.nsi'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 生成下载校验值
+        shell: pwsh
+        run: |
+          $assets = @(
+            'build\installer\Code-Runtime-Analyzer-Setup-${{ github.ref_name }}.exe',
+            'Code-Runtime-Analyzer-${{ github.ref_name }}.vsix'
+          )
+          $lines = $assets | ForEach-Object {
+            $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_
+            "$($hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($_))"
+          }
+          Set-Content -LiteralPath 'SHA256SUMS.txt' -Value $lines -Encoding utf8NoBOM
+
+      - name: 创建 GitHub Release 并上传完整安装包
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: Code-Runtime-Analyzer-${{ github.ref_name }}.vsix
+          files: |
+            build/installer/Code-Runtime-Analyzer-Setup-${{ github.ref_name }}.exe
+            Code-Runtime-Analyzer-${{ github.ref_name }}.vsix
+            SHA256SUMS.txt
