@@ -8,7 +8,8 @@
     "mcp": "npm --prefix backend run mcp",
     "prepare:extension": "npm --prefix web run build && node scripts/prepare-extension.mjs",
     "prepare:windows-distribution": "node scripts/prepare-windows-distribution.mjs",
-    "test": "npm --prefix backend test && npm --prefix extension run compile && npm --prefix web run lint && npm --prefix web run build"
+    "prepare:test-fixture": "node scripts/prepare-test-fixture.mjs",
+    "test": "npm run prepare:test-fixture && npm --prefix backend test && npm --prefix extension run compile && npm --prefix web run lint && npm --prefix web run build"
   },
   "engines": {
     "node": ">=20"

@@ -28,13 +28,13 @@ test('Clang index finds array-member expressions in the replay writer', { skip: 
   assert.equal(valueAccess.qualifiedName, 'Game::tile_t::value');
   assert.equal(valueAccess.qualifiedNameSource, 'field_declaration');
   assert.equal(valueAccess.definitionFile,
-    resolve(workspace, 'third_party/2048.cpp-master/src/headers/tile.hpp'));
+    resolve(workspace, 'labs/2048_csv_replay/include/tile.hpp'));
   assert.equal(valueAccess.declarationFile, valueAccess.definitionFile);
   // The optimized clangd path reports the canonical FieldDecl line.  This is
   // the location the dictionary actually identifies, rather than the opening
   // line of the enclosing record.
-  assert.equal(valueAccess.definitionLine, 8);
-  assert.equal(valueAccess.declarationLine, 8);
+  assert.equal(valueAccess.definitionLine, 6);
+  assert.equal(valueAccess.declarationLine, 6);
   assert.equal(valueAccess.variableDeclarationKind, 'VarDecl');
   assert.match(valueAccess.variableDeclarationType, /std::vector<Game::tile_t/);
   assert.equal(valueAccess.rootStorageKind, 'local');
