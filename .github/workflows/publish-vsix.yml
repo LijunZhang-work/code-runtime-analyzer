@@ -55,7 +55,19 @@ jobs:
 
       - name: 执行后台测试
         shell: pwsh
-        run: npm --prefix backend test
+        run: |
+          npm --prefix backend test 2>&1 | Tee-Object -FilePath 'backend-test.log'
+          $testExitCode = $LASTEXITCODE
+          if ($testExitCode -ne 0) {
+            @(
+              '### 后台测试失败详情',
+              '',
+              '```text'
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Get-Content -LiteralPath 'backend-test.log' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            exit $testExitCode
+          }
 
       - name: 编译 VS Code 扩展
         shell: pwsh
