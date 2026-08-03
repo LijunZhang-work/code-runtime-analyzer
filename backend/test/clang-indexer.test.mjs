@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { indexFile } from '../src/clang-indexer.mjs';
@@ -127,14 +127,15 @@ test('Clang index reports independent globals but not locals or member bases as 
     functionName: 'inspect',
     clangdPath
   });
+  const canonicalSourcePath = await realpath(sourcePath);
   const globals = result.fields.filter((field) => field.symbolKind === 'global');
   assert.equal(globals.length, 1, JSON.stringify(result, null, 2));
   assert.equal(globals[0].name, 'global_count');
   assert.equal(globals[0].qualifiedName, 'demo::global_count');
   assert.equal(globals[0].valueType, 'int');
   assert.equal(globals[0].rootStorageKind, 'global');
-  assert.equal(globals[0].definitionFile, sourcePath);
-  assert.equal(globals[0].declarationFile, sourcePath);
+  assert.equal(globals[0].definitionFile, canonicalSourcePath);
+  assert.equal(globals[0].declarationFile, canonicalSourcePath);
   assert.equal(globals[0].internalLinkage, true);
   assert.equal(globals[0].storageClass, 'static');
   assert.ok(!globals.some((field) => field.name === 'local' || field.name === 'item'));
@@ -144,7 +145,7 @@ test('Clang index reports independent globals but not locals or member bases as 
   assert.equal(member.ownerType, 'Item');
   assert.equal(member.variablePath, 'item');
   assert.equal(member.rootStorageKind, 'parameter');
-  assert.equal(member.definitionFile, sourcePath);
+  assert.equal(member.definitionFile, canonicalSourcePath);
 
   const inherited = result.fields.find((field) => field.expression === 'derived->inherited');
   // Clang inserts the standards-required derived-to-base conversion before
@@ -155,6 +156,6 @@ test('Clang index reports independent globals but not locals or member bases as 
   assert.equal(inherited.declaringType, 'demo::Base');
   assert.equal(inherited.qualifiedName, 'demo::Base::inherited');
   assert.equal(inherited.qualifiedNameSource, 'field_declaration');
-  assert.equal(inherited.definitionFile, sourcePath);
-  assert.equal(inherited.declarationFile, sourcePath);
+  assert.equal(inherited.definitionFile, canonicalSourcePath);
+  assert.equal(inherited.declarationFile, canonicalSourcePath);
 });
