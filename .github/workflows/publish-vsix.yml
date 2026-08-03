@@ -120,7 +120,7 @@ jobs:
           } else {
             (Get-Command makensis.exe -ErrorAction Stop).Source
           }
-          & $makensis "/DAPP_VERSION=$releaseVersion" "/DSOURCE_ROOT=$sourceRoot" "/DOUTPUT_DIR=$outputDir" "/DVSIX_NAME=$vsixName" 'installer\windows\CodeRuntimeAnalyzer.nsi'
+          & $makensis '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$releaseVersion" "/DSOURCE_ROOT=$sourceRoot" "/DOUTPUT_DIR=$outputDir" "/DVSIX_NAME=$vsixName" 'installer\windows\CodeRuntimeAnalyzer.nsi'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 生成下载校验值
