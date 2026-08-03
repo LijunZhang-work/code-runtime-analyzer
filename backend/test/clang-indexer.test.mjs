@@ -128,7 +128,7 @@ test('Clang index reports independent globals but not locals or member bases as 
     clangdPath
   });
   const globals = result.fields.filter((field) => field.symbolKind === 'global');
-  assert.equal(globals.length, 1);
+  assert.equal(globals.length, 1, JSON.stringify(result, null, 2));
   assert.equal(globals[0].name, 'global_count');
   assert.equal(globals[0].qualifiedName, 'demo::global_count');
   assert.equal(globals[0].valueType, 'int');

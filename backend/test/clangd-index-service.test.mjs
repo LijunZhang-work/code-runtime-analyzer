@@ -71,6 +71,7 @@ test('Clangd index supports arguments entries and covers methods with UTF-8 befo
       targetHints: { members: ['age'], globals: [] }
     });
     const age = result.fields.find((field) => field.memberName === 'age');
+    assert.ok(age, JSON.stringify(result, null, 2));
     assert.equal(age.functionName, 'read');
     assert.equal(age.qualifiedName, 'school::Student::age');
     assert.equal(age.expression, 'age');
