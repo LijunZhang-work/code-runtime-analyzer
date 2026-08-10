@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { CompatibilityItemState, CompatibilityReport } from './compatibility-report';
 
 export const DEFAULT_DIAGNOSTICS_VIEW_ID = 'cppCsvDiagnostics.diagnosticsPanel';
 
@@ -34,7 +35,7 @@ export interface DiagnosticsDataQualitySummary {
   checkedAt?: string;
 }
 
-type GroupId = 'current' | 'files' | 'actions' | 'quality';
+type GroupId = 'compatibility' | 'current' | 'files' | 'actions' | 'quality';
 
 export type DiagnosticsTreeNode =
   | {
@@ -76,6 +77,7 @@ export class DiagnosticsPanelController implements vscode.TreeDataProvider<Diagn
   private current: DiagnosticsCurrentState = { status: '就绪', statusKind: 'idle' };
   private folderSummary: DiagnosticsFolderSummary | undefined;
   private quality: DiagnosticsDataQualitySummary | undefined;
+  private compatibility: CompatibilityReport | undefined;
   private disposed = false;
 
   readonly onDidChangeTreeData = this.changeEmitter.event;
@@ -109,6 +111,11 @@ export class DiagnosticsPanelController implements vscode.TreeDataProvider<Diagn
     this.refresh();
   }
 
+  updateCompatibility(report: CompatibilityReport | undefined): void {
+    this.compatibility = report;
+    this.refresh();
+  }
+
   refresh(node?: DiagnosticsTreeNode): void {
     if (!this.disposed) this.changeEmitter.fire(node);
   }
@@ -135,6 +142,7 @@ export class DiagnosticsPanelController implements vscode.TreeDataProvider<Diagn
     if (!node) return this.rootGroups();
     if (node.kind !== 'group') return [];
     switch (node.id) {
+      case 'compatibility': return this.compatibilityItems();
       case 'current': return this.currentItems();
       case 'files': return this.folderItems();
       case 'actions': return [
@@ -159,6 +167,13 @@ export class DiagnosticsPanelController implements vscode.TreeDataProvider<Diagn
 
   private rootGroups(): DiagnosticsTreeNode[] {
     return [
+      {
+        kind: 'group',
+        id: 'compatibility',
+        label: '编辑器兼容性',
+        icon: this.compatibility ? compatibilityIcon(this.compatibility.overall) : 'loading',
+        collapsibleState: vscode.TreeItemCollapsibleState.Expanded
+      },
       {
         kind: 'group',
         id: 'files',
@@ -188,6 +203,47 @@ export class DiagnosticsPanelController implements vscode.TreeDataProvider<Diagn
         collapsibleState: vscode.TreeItemCollapsibleState.Expanded
       }
     ];
+  }
+
+  private compatibilityItems(): DiagnosticsTreeNode[] {
+    const report = this.compatibility;
+    if (!report) {
+      return [{
+        kind: 'item',
+        id: 'compatibility-waiting',
+        label: '等待打开 C/C++ 文件',
+        description: '打开后自动检测',
+        tooltip: '工具会在真实 C/C++ 文件中自动检查后台连接、代码定位、类型查询和函数调用关系。',
+        icon: 'clock',
+        command: command('cppCsvDiagnostics.runCompatibilityCheck', '重新检测')
+      }];
+    }
+    const rows: DiagnosticsTreeNode[] = [{
+      kind: 'item',
+      id: 'compatibility-overall',
+      label: '检测结论',
+      description: report.headline,
+      tooltip: `${report.summary}\n\n点击查看每一项的大白话解释和下一步。`,
+      icon: compatibilityIcon(report.overall),
+      command: command('cppCsvDiagnostics.showCompatibilityReport', '查看详细解释')
+    }];
+    for (const item of report.items) {
+      rows.push({
+        kind: 'item',
+        id: `compatibility-${item.id}`,
+        label: item.label,
+        description: item.short,
+        tooltip: `这是什么意思：${item.meaning}\n\n系统检查到什么：${item.observed}\n\n下一步：${item.nextStep}`,
+        icon: compatibilityIcon(item.state),
+        command: command('cppCsvDiagnostics.showCompatibilityReport', '查看详细解释')
+      });
+    }
+    rows.push(
+      commandNode('compatibility-recheck', '重新检测', 'refresh', 'cppCsvDiagnostics.runCompatibilityCheck'),
+      commandNode('compatibility-details', '查看详细解释', 'info', 'cppCsvDiagnostics.showCompatibilityReport'),
+      commandNode('compatibility-copy', '复制诊断信息', 'copy', 'cppCsvDiagnostics.copyCompatibilityReport')
+    );
+    return rows;
   }
 
   private currentItems(): DiagnosticsTreeNode[] {
@@ -367,6 +423,16 @@ function statusIcon(kind: DiagnosticsStatusKind): string {
     case 'warning': return 'warning';
     case 'error': return 'error';
     default: return 'circle-outline';
+  }
+}
+
+function compatibilityIcon(state: CompatibilityItemState): string {
+  switch (state) {
+    case 'ready': return 'pass-filled';
+    case 'partial': return 'warning';
+    case 'waiting': return 'clock';
+    case 'unsupported': return 'circle-slash';
+    case 'error': return 'error';
   }
 }
 

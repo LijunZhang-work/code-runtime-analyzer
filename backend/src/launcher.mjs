@@ -147,6 +147,51 @@ export async function serviceStatus(options = {}) {
   return { ...paths, health: await health(paths.baseUrl), state: await readJson(paths.stateFile) };
 }
 
+export async function restartService(options = {}) {
+  await stopService(options);
+  return startService(options);
+}
+
+function formatHumanResult(command, result) {
+  const running = result.health?.product === 'code-runtime-analyzer';
+  if (command === 'status') {
+    return running
+      ? [
+        '后台状态：正在运行',
+        `版本：${result.health.version ?? '未知'}`,
+        `服务地址：${result.baseUrl}`,
+        `进程号：${result.state?.pid ?? '未知'}`,
+        `启动时间：${result.state?.startedAt ?? '未知'}`,
+        `日志：${result.logFile}`
+      ].join('\n')
+      : [
+        '后台状态：未运行',
+        `预定服务地址：${result.baseUrl}`,
+        `日志：${result.logFile}`
+      ].join('\n');
+  }
+  if (command === 'start') {
+    return result.status === 'already-running'
+      ? `后台原本就在运行。\n服务地址：${result.baseUrl}`
+      : `后台已经启动。\n服务地址：${result.baseUrl}\n日志：${result.logFile}`;
+  }
+  if (command === 'restart') return `后台已经重新启动。\n服务地址：${result.baseUrl}\n日志：${result.logFile}`;
+  if (command === 'stop') {
+    return result.status === 'not-running' ? '后台原本就没有运行。' : '后台已经停止。';
+  }
+  return JSON.stringify(result, null, 2);
+}
+
+function formatControlResult(command, result) {
+  if (command === 'status') {
+    return result.health?.product === 'code-runtime-analyzer'
+      ? ['running', result.health.version ?? 'unknown', result.baseUrl, result.state?.pid ?? 'unknown', result.state?.startedAt ?? 'unknown'].join('|')
+      : ['not-running', result.baseUrl].join('|');
+  }
+  if (command === 'open') return ['opened', result.baseUrl].join('|');
+  return [result.status ?? command, result.baseUrl ?? ''].join('|');
+}
+
 async function openWorkbench(options = {}) {
   const running = await startService(options);
   const child = spawn('cmd.exe', ['/d', '/c', 'start', '', `${running.baseUrl}/workbench/`], {
@@ -167,14 +212,19 @@ async function printOpenCodeConfig(options = {}) {
 
 async function main() {
   const command = process.argv[2] || 'status';
+  const humanReadable = process.argv.includes('--text');
+  const controlReadable = process.argv.includes('--control');
   const result = command === 'start' ? await startService()
     : command === 'stop' ? await stopService()
+      : command === 'restart' ? await restartService()
       : command === 'open' ? await openWorkbench()
         : command === 'opencode-config' ? await printOpenCodeConfig()
           : command === 'status' ? await serviceStatus()
             : undefined;
-  if (!result) throw new Error(`未知命令：${command}。可用命令：start、stop、open、status、opencode-config。`);
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (!result) throw new Error(`未知命令：${command}。可用命令：start、stop、restart、open、status、opencode-config。`);
+  process.stdout.write(`${controlReadable
+    ? formatControlResult(command, result)
+    : humanReadable ? formatHumanResult(command, result) : JSON.stringify(result, null, 2)}\n`);
 }
 
 const isEntrypoint = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));

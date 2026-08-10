@@ -708,6 +708,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline-colo
 .call-graph-panel { background: #fff; }
 .call-graph-toolbar { border-bottom-color: #e6ece7; background: #fff; }
 .call-graph-toolbar p { color: #758279; }
+.graph-availability { display: flex; align-items: flex-start; gap: 8px; padding: 9px 18px; color: #426151; border-bottom: 1px solid #e3ebe5; background: #f5faf6; font-size: 11px; line-height: 1.55; }
+.graph-availability svg { flex: 0 0 auto; margin-top: 1px; color: #2b765c; }
+.graph-availability.is-partial { color: #6e572f; border-bottom-color: #eadfc9; background: #fffaf0; }
+.graph-availability.is-partial svg { color: #a6752f; }
+.graph-availability.is-error { color: #8b3d3d; border-bottom-color: #eed5d5; background: #fff7f7; }
+.graph-availability.is-error svg { color: #b45252; }
 .graph-legend { color: #69776e; }
 .graph-legend i { border-radius: 50%; }
 .legend-current { background: #2b765c; box-shadow: 0 0 0 3px rgba(43, 118, 92, .12); }

@@ -12,10 +12,6 @@ Unicode true
 !ifndef OUTPUT_DIR
   !define OUTPUT_DIR "..\..\build\installer"
 !endif
-!ifndef VSIX_NAME
-  !define VSIX_NAME "Code-Runtime-Analyzer-v0.10.0.vsix"
-!endif
-
 !define PRODUCT_NAME "Code Runtime Analyzer"
 !define PRODUCT_ID "CodeRuntimeAnalyzer"
 !define PRODUCT_PUBLISHER "LijunZhang-work"
@@ -37,12 +33,10 @@ VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey "LegalCopyright" "Copyright ${PRODUCT_PUBLISHER}"
 
-Var VSCodeCli
-
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\runtime\node.exe"
-!define MUI_FINISHPAGE_RUN_PARAMETERS '$\"$INSTDIR\backend\src\launcher.mjs$\" open'
-!define MUI_FINISHPAGE_RUN_TEXT "安装完成后打开 Web 工作台"
+!define MUI_FINISHPAGE_RUN "$WINDIR\System32\wscript.exe"
+!define MUI_FINISHPAGE_RUN_PARAMETERS '$\"$INSTDIR\backend-control.vbs$\"'
+!define MUI_FINISHPAGE_RUN_TEXT "打开后台控制中心"
 !define MUI_FINISHPAGE_LINK "查看项目主页"
 !define MUI_FINISHPAGE_LINK_LOCATION "${PRODUCT_WEB}"
 
@@ -55,25 +49,7 @@ Var VSCodeCli
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
-Function FindVSCode
-  StrCpy $VSCodeCli ""
-  IfFileExists "$LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" 0 +2
-    StrCpy $VSCodeCli "$LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"
-  ${If} $VSCodeCli == ""
-    IfFileExists "$PROGRAMFILES64\Microsoft VS Code\bin\code.cmd" 0 +2
-      StrCpy $VSCodeCli "$PROGRAMFILES64\Microsoft VS Code\bin\code.cmd"
-  ${EndIf}
-  ${If} $VSCodeCli == ""
-    IfFileExists "$PROGRAMFILES\Microsoft VS Code\bin\code.cmd" 0 +2
-      StrCpy $VSCodeCli "$PROGRAMFILES\Microsoft VS Code\bin\code.cmd"
-  ${EndIf}
-FunctionEnd
-
-Function .onInit
-  Call FindVSCode
-FunctionEnd
-
-Section "核心后台、网页和 MCP（必装）" SEC_CORE
+Section "后台核心和 Web（必装）" SEC_CORE
   SectionIn RO
 
   ; 升级时先停止旧后台，避免覆盖正在使用的文件。
@@ -103,6 +79,7 @@ Section "核心后台、网页和 MCP（必装）" SEC_CORE
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}" "NoRepair" 1
 
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\后台控制中心.lnk" "$WINDIR\System32\wscript.exe" '$\"$INSTDIR\backend-control.vbs$\"' "" 0 SW_SHOWNORMAL "" "查看、启动、停止或重启后台"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\打开网页工作台.lnk" "$WINDIR\System32\wscript.exe" '$\"$INSTDIR\launcher.vbs$\" open' "" 0 SW_SHOWNORMAL "" "打开 ${PRODUCT_NAME} 网页工作台"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\使用说明.lnk" "$INSTDIR\docs\工具使用指南.md"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\字段字典填写说明.lnk" "$INSTDIR\docs\字段字典填写说明.md"
@@ -112,36 +89,21 @@ Section "核心后台、网页和 MCP（必装）" SEC_CORE
   Pop $0
   ${If} $0 != 0
     MessageBox MB_ICONEXCLAMATION|MB_OK "后台没有正常启动。请在开始菜单打开使用说明，或查看：$LOCALAPPDATA\CodeRuntimeAnalyzer\backend.log"
-  ${EndIf}
-SectionEnd
-
-Section "自动安装 VS Code 扩展" SEC_VSCODE
-  ${If} $VSCodeCli == ""
-    DetailPrint "未找到 VS Code，跳过扩展安装。以后可从安装目录的 extension 文件夹手动安装 VSIX。"
   ${Else}
-    nsExec::ExecToLog '"$SYSDIR\cmd.exe" /d /c ""$VSCodeCli" --install-extension "$INSTDIR\extension\${VSIX_NAME}" --force"'
-    Pop $0
-    ${If} $0 != 0
-      MessageBox MB_ICONEXCLAMATION|MB_OK "后台和网页已经安装，但 VS Code 扩展自动安装失败。可以稍后从安装目录的 extension 文件夹手动安装 VSIX。"
-    ${EndIf}
+    MessageBox MB_ICONINFORMATION|MB_OK "后台已经安装并启动。$\r$\n$\r$\n你可以随时从开始菜单打开“Code Runtime Analyzer → 后台控制中心”，查看状态、启动、停止、重启或打开日志。$\r$\n$\r$\n编辑器扩展和 MCP 都不会由本安装程序自动安装。请分别使用单独发布的 VSIX 和 MCP 包。"
   ${EndIf}
 SectionEnd
 
-Section "登录 Windows 后自动启动后台" SEC_STARTUP
+Section /o "登录 Windows 后自动启动后台" SEC_STARTUP
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_ID}" '$\"$WINDIR\System32\wscript.exe$\" $\"$INSTDIR\launcher.vbs$\" start'
 SectionEnd
 
 Section "Uninstall"
-  IfFileExists "$INSTDIR\runtime\node.exe" 0 extension
-  IfFileExists "$INSTDIR\backend\src\launcher.mjs" 0 extension
+  IfFileExists "$INSTDIR\runtime\node.exe" 0 cleanup
+  IfFileExists "$INSTDIR\backend\src\launcher.mjs" 0 cleanup
     nsExec::ExecToLog '"$INSTDIR\runtime\node.exe" "$INSTDIR\backend\src\launcher.mjs" stop'
 
-  extension:
-  Call un.FindVSCode
-  ${If} $VSCodeCli != ""
-    nsExec::ExecToLog '"$SYSDIR\cmd.exe" /d /c ""$VSCodeCli" --uninstall-extension local.cpp-csv-diagnostics"'
-  ${EndIf}
-
+  cleanup:
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_ID}"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
   DeleteRegKey HKCU "Software\${PRODUCT_ID}"
@@ -151,22 +113,7 @@ Section "Uninstall"
   ; 故意保留 $LOCALAPPDATA\CodeRuntimeAnalyzer：其中可能有用户字典和日志。
 SectionEnd
 
-Function un.FindVSCode
-  StrCpy $VSCodeCli ""
-  IfFileExists "$LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" 0 +2
-    StrCpy $VSCodeCli "$LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd"
-  ${If} $VSCodeCli == ""
-    IfFileExists "$PROGRAMFILES64\Microsoft VS Code\bin\code.cmd" 0 +2
-      StrCpy $VSCodeCli "$PROGRAMFILES64\Microsoft VS Code\bin\code.cmd"
-  ${EndIf}
-  ${If} $VSCodeCli == ""
-    IfFileExists "$PROGRAMFILES\Microsoft VS Code\bin\code.cmd" 0 +2
-      StrCpy $VSCodeCli "$PROGRAMFILES\Microsoft VS Code\bin\code.cmd"
-  ${EndIf}
-FunctionEnd
-
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CORE} "安装独立后台、网页工作台、OpenCode/AI MCP、自带运行环境和产品字典。"
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_VSCODE} "检测本机 VS Code 并自动安装扩展。未安装 VS Code 时会安全跳过。"
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_STARTUP} "让后台在登录后静默启动，VS Code、网页和 OpenCode 随时可以连接。"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CORE} "安装独立后台、后台控制中心、网页工作台、自带运行环境和产品字典；不安装插件或 MCP，也不修改任何编辑器。"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_STARTUP} "让后台在登录后静默启动，编辑器、网页和 OpenCode 随时可以连接。"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END

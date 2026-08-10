@@ -52,6 +52,7 @@ type GraphNode = {
   relativePath: string | null
   line: number | null
   column: number | null
+  documentVersion?: number | null
   kind: 'definition' | 'external' | string
 }
 
@@ -73,19 +74,29 @@ type Graph = {
   omittedExternalCallCount?: number
   oversizedFunctionCount?: number
   performance?: { cacheHit?: boolean; totalMs?: number; analyzedFunctionCount?: number }
+  semanticStatus?: 'available' | 'noEvidence' | 'notReady' | 'unsupported' | 'timeout' | 'failed' | 'demo'
+  statusSummary?: string
+  statusDetail?: string
 }
 
 type WorkbenchContext = {
   workspaceRoot?: string
   filePath?: string
-  compileCommandsPath?: string
   dictionaryId?: string
   dictionaryName?: string
   runRecordId?: string
   dataRevision?: string
   requestedTime?: string
   focusLine?: string
+  focusColumn?: string
+  documentVersion?: number
   windowSessionId?: string
+}
+
+type EditorSemanticResponse = {
+  status?: string
+  result?: Graph
+  error?: string
 }
 
 type FunctionRole = 'current' | 'caller' | 'callee' | 'linked' | 'external'
@@ -138,9 +149,10 @@ type IntegrationStatus = {
 }
 type OpenCodeConfiguration = {
   serverName: string
+  packageName: string
+  artifactPattern: string
   current: Record<string, unknown>
   legacy: Record<string, unknown>
-  runtime: { installRoot: string; nodePath: string; mcpPath: string }
 }
 
 const DEMO_SOURCE = 'src/energy_dispatch_demo.cpp'
@@ -204,7 +216,7 @@ const DEMO_MODULES: ProductModule[] = [
 ]
 
 const DEMO_GRAPH: Graph = {
-  analyzer: 'clang-ast-json',
+  analyzer: 'editor-language-service-demo',
   relativePath: DEMO_SOURCE,
   focusNodeId: 'run_dispatch_cycle',
   nodes: [
@@ -261,22 +273,29 @@ const DEMO_GRAPH: Graph = {
     demoEdge('run_dispatch_cycle', 'publish_telemetry', 129),
     demoEdge('run_dispatch_cycle', 'write_audit_log', 130),
   ],
-  limitations: ['这是可由 Clang 编译解析的真实示例；从 VS Code 打开后会替换为当前工程的真实关系。'],
+  limitations: ['这是界面演示数据；从编辑器打开后，会替换为当前编辑器语言服务返回的真实关系。'],
+  semanticStatus: 'demo',
+  statusSummary: '当前是演示界面',
+  statusDetail: '这张图不是用户项目数据。请从编辑器的“历史诊断”面板打开 Web 工作台。',
 }
 
 function readContext(): WorkbenchContext {
   const params = new URLSearchParams(window.location.search)
+  const documentVersion = params.get('documentVersion')
   return {
     workspaceRoot: params.get('workspaceRoot') ?? undefined,
     filePath: params.get('filePath') ?? undefined,
-    compileCommandsPath: params.get('compileCommandsPath') ?? undefined,
     dictionaryId: params.get('dictionaryId') ?? undefined,
     dictionaryName: params.get('dictionaryName') ?? undefined,
     runRecordId: params.get('runRecordId') ?? undefined,
     dataRevision: params.get('dataRevision') ?? undefined,
     requestedTime: params.get('requestedTime') ?? undefined,
     focusLine: params.get('focusLine') ?? undefined,
+    focusColumn: params.get('focusColumn') ?? undefined,
     windowSessionId: params.get('windowSessionId') ?? undefined,
+    documentVersion: documentVersion !== null && Number.isInteger(Number(documentVersion))
+      ? Number(documentVersion)
+      : undefined,
   }
 }
 
@@ -292,18 +311,99 @@ async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): P
   return result
 }
 
-async function requestGraph(context: WorkbenchContext, signal?: AbortSignal): Promise<Graph> {
-  return postJson<Graph>('/api/web/call-graph', {
-    workspaceRoot: context.workspaceRoot,
-    filePath: context.filePath,
-    compileCommandsPath: context.compileCommandsPath,
-    // The workbench is intentionally bounded.  A user opens one function,
-    // not a whole-project graph, so unrelated source files never flood the UI.
-    maxNodes: 56,
-    maxEdges: 88,
-    includeExternal: false,
-    focusLine: context.focusLine ? Number(context.focusLine) : undefined,
+async function requestGraph(
+  context: WorkbenchContext,
+  position?: Pick<GraphNode, 'filePath' | 'line' | 'column' | 'documentVersion'>,
+  signal?: AbortSignal,
+): Promise<Graph> {
+  const filePath = position?.filePath ?? context.filePath
+  const line = position?.line ?? (context.focusLine ? Number(context.focusLine) : 1)
+  const column = position?.column ?? (context.focusColumn ? Number(context.focusColumn) : 1)
+  const documentVersion = position?.documentVersion
+    ?? (filePath === context.filePath ? context.documentVersion : undefined)
+
+  if (!context.windowSessionId) {
+    throw new Error('这个网页没有绑定编辑器窗口；本阶段不启动离线代码分析。')
+  }
+  const response = await postJson<EditorSemanticResponse>('/api/web/editor/semantic', {
+    windowSessionId: context.windowSessionId,
+    operation: 'callHierarchy',
+    payload: {
+      workspaceRoot: context.workspaceRoot,
+      filePath,
+      line,
+      column,
+      documentVersion,
+    },
+    timeoutMs: 25_000,
   }, signal)
+  if (response.result && Array.isArray(response.result.nodes) && Array.isArray(response.result.edges)) {
+    return response.result
+  }
+  return {
+    nodes: [],
+    edges: [],
+    semanticStatus: 'noEvidence',
+    statusSummary: '编辑器本次没有返回可展示结果',
+    statusDetail: response.error ?? '编辑器连接器没有附带可验证的函数图；工具没有把空响应当作成功。',
+    limitations: ['语义响应没有包含有效函数图。'],
+  }
+}
+
+function mergeGraphs(current: Graph, incoming: Graph): Graph {
+  const nodes = new Map(current.nodes.map((node) => [node.id, node]))
+  for (const node of incoming.nodes) nodes.set(node.id, { ...nodes.get(node.id), ...node })
+
+  const edges = new Map(current.edges.map((edge) => [`${edge.source}\u0000${edge.target}`, edge]))
+  for (const edge of incoming.edges) {
+    const key = `${edge.source}\u0000${edge.target}`
+    const existing = edges.get(key)
+    if (!existing) {
+      edges.set(key, edge)
+      continue
+    }
+    const callSites = new Map(existing.callSites.map((site) => [`${site.line ?? ''}:${site.column ?? ''}`, site]))
+    for (const site of edge.callSites) callSites.set(`${site.line ?? ''}:${site.column ?? ''}`, site)
+    edges.set(key, { ...existing, ...edge, callSites: [...callSites.values()] })
+  }
+
+  return {
+    ...current,
+    ...incoming,
+    focusNodeId: incoming.focusNodeId ?? current.focusNodeId,
+    nodes: [...nodes.values()],
+    edges: [...edges.values()],
+    limitations: [...new Set([...(current.limitations ?? []), ...(incoming.limitations ?? [])])],
+    truncated: Boolean(current.truncated || incoming.truncated),
+    omittedExternalCallCount: Math.max(current.omittedExternalCallCount ?? 0, incoming.omittedExternalCallCount ?? 0),
+    oversizedFunctionCount: Math.max(current.oversizedFunctionCount ?? 0, incoming.oversizedFunctionCount ?? 0),
+  }
+}
+
+function specificGraphLimitation(graph: Graph): string | undefined {
+  return graph.limitations?.find((item) => ![
+    '调用关系来自当前编辑器语言服务，只显示它明确返回的直接关系。',
+    '当前结果来自编辑器正在使用的语言服务；编辑器没有明确返回的关系不会被猜测。',
+  ].includes(item))
+}
+
+function graphStatusMessage(graph: Graph, subject?: string): string {
+  const prefix = subject ? `${subject}：` : ''
+  const detail = graph.statusDetail?.trim()
+  const limitation = specificGraphLimitation(graph)
+  if (graph.semanticStatus === 'demo') return detail ?? '当前是演示数据，不是用户项目的分析结果。'
+  if (graph.semanticStatus === 'available') {
+    const main = detail ?? `${prefix}当前编辑器已经返回可验证的一层调用关系。`
+    return limitation ? `${main} ${limitation}` : main
+  }
+  if (graph.semanticStatus === 'noEvidence') {
+    return detail ?? `${prefix}当前编辑器本次没有返回调用关系证据；这不表示代码里绝对不存在调用。`
+  }
+  return detail ?? graph.statusSummary ?? `${prefix}当前编辑器这次没有完成调用关系请求。`
+}
+
+function graphRequestKey(node: Pick<GraphNode, 'filePath' | 'line' | 'column' | 'documentVersion'>) {
+  return `${node.filePath ?? ''}:${node.line ?? 1}:${node.column ?? 1}:${node.documentVersion ?? ''}`
 }
 
 async function requestEvidenceContext(context: WorkbenchContext, signal?: AbortSignal): Promise<EvidenceContext> {
@@ -449,9 +549,9 @@ function shortPath(value: string) {
   return pieces.length > 2 ? `${pieces.slice(-2).join('/')}` : value
 }
 
-async function openInVsCode(context: WorkbenchContext, node: GraphNode) {
+async function openInEditor(context: WorkbenchContext, node: GraphNode) {
   if (!node.filePath || !node.line) throw new Error('这个节点没有可确认的源文件位置')
-  if (!context.windowSessionId) throw new Error('请从 VS Code 右侧“打开网页工作台”进入，才能定位回原窗口。')
+  if (!context.windowSessionId) throw new Error('请从“历史诊断”面板打开 Web 工作台，才能定位回原窗口。')
   await postJson('/api/web/open-in-vscode', {
     filePath: node.filePath,
     line: node.line,
@@ -477,8 +577,13 @@ function findGraphNode(reference: ModuleFunction, graph: Graph) {
 function App() {
   const context = useMemo(readContext, [])
   const prefersReducedMotion = useReducedMotion()
-  const [graph, setGraph] = useState<Graph>(DEMO_GRAPH)
-  const [graphLoading, setGraphLoading] = useState(Boolean(context.filePath && context.compileCommandsPath))
+  const hasEditorGraphContext = Boolean(context.filePath && context.windowSessionId)
+  const [graph, setGraph] = useState<Graph>(context.filePath ? { nodes: [], edges: [] } : DEMO_GRAPH)
+  const [graphLoading, setGraphLoading] = useState(hasEditorGraphContext)
+  const [graphError, setGraphError] = useState<string | undefined>()
+  const [graphMessage, setGraphMessage] = useState<string | undefined>(context.filePath && !context.windowSessionId
+    ? '这个网页没有绑定编辑器窗口。本阶段不会自动启动离线分析；请从目标编辑器的“历史诊断”面板重新打开 Web 工作台。'
+    : undefined)
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('function')
   const [functionTab, setFunctionTab] = useState<FunctionTab>('calls')
   const [graphResetToken, setGraphResetToken] = useState(0)
@@ -499,6 +604,8 @@ function App() {
   const [openCodeConfiguration, setOpenCodeConfiguration] = useState<OpenCodeConfiguration | undefined>()
   const [integrationsLoading, setIntegrationsLoading] = useState(false)
   const functionSearchRef = useRef<HTMLInputElement>(null)
+  const expandedNodeKeys = useRef(new Set<string>())
+  const expandingNodeKeys = useRef(new Set<string>())
 
   useEffect(() => {
     const focusFunctionSearch = (event: KeyboardEvent) => {
@@ -511,19 +618,28 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!context.filePath || !context.compileCommandsPath) return
+    if (!context.filePath || !context.windowSessionId) return
     const controller = new AbortController()
+    expandedNodeKeys.current.clear()
+    expandingNodeKeys.current.clear()
     setGraphLoading(true)
+    setGraphError(undefined)
+    setGraphMessage('正在向当前编辑器请求这个函数的一层调用关系。')
     setGraph({ nodes: [], edges: [] })
-    requestGraph(context, controller.signal)
+    requestGraph(context, undefined, controller.signal)
       .then((next) => {
         setGraph(next)
         const focused = next.nodes.find((node) => node.id === next.focusNodeId) ?? next.nodes.find((node) => node.kind === 'definition')
-        if (focused) setSelectedId(focused.id)
+        if (focused) {
+          setSelectedId(focused.id)
+          expandedNodeKeys.current.add(graphRequestKey(focused))
+        }
+        setGraphMessage(graphStatusMessage(next))
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return
-        setNotice({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) })
+        const detail = reason instanceof Error ? reason.message : String(reason)
+        setGraphError(`当前编辑器这次没有返回可用的调用关系。它可能还在准备项目，或暂不支持调用层级。${detail ? ` 详细原因：${detail}` : ''}`)
       })
       .finally(() => !controller.signal.aborted && setGraphLoading(false))
     return () => controller.abort()
@@ -601,9 +717,9 @@ function App() {
   const graphKey = useMemo(() => `${selected?.id ?? 'empty'}:${graph.nodes.map((node) => node.id).join('|')}`, [graph.nodes, selected?.id])
   const selectedModule = modules.find((module) => module.id === selectedModuleId)
   const currentModules = useMemo(() => selected ? modules.filter((module) => module.functions.some((reference) => Boolean(findGraphNode(reference, { ...graph, nodes: [selected] })))) : [], [graph, modules, selected])
-  const hasCodeContext = Boolean(context.filePath && context.compileCommandsPath)
-  const isBoundToVsCode = Boolean(context.windowSessionId)
-  const canLocate = Boolean(selected?.filePath && isBoundToVsCode)
+  const hasCodeContext = Boolean(context.filePath)
+  const isBoundToEditor = Boolean(context.windowSessionId)
+  const canLocate = Boolean(selected?.filePath && isBoundToEditor)
 
   const selectFunction = useCallback((id: string) => {
     setSelectedId(id)
@@ -612,11 +728,36 @@ function App() {
     setInspectorOpen(true)
   }, [])
 
+  const selectAndExpandFunction = useCallback((id: string) => {
+    selectFunction(id)
+    if (!context.windowSessionId) return
+    const node = graph.nodes.find((item) => item.id === id)
+    if (!node?.filePath) return
+    const requestKey = graphRequestKey(node)
+    if (expandedNodeKeys.current.has(requestKey) || expandingNodeKeys.current.has(requestKey)) return
+
+    expandingNodeKeys.current.add(requestKey)
+    setGraphLoading(true)
+    setGraphError(undefined)
+    setGraphMessage(`正在向当前编辑器请求 ${node.label} 的一层调用关系。`)
+    void requestGraph(context, node).then((next) => {
+      expandedNodeKeys.current.add(requestKey)
+      setGraph((current) => mergeGraphs(current, next))
+      setGraphMessage(graphStatusMessage(next, node.label))
+    }).catch((reason: unknown) => {
+      const detail = reason instanceof Error ? reason.message : String(reason)
+      setGraphError(`暂时无法展开 ${node.label}。编辑器可能还在准备项目，你可以稍后再点一次。${detail ? ` 详细原因：${detail}` : ''}`)
+    }).finally(() => {
+      expandingNodeKeys.current.delete(requestKey)
+      setGraphLoading(expandingNodeKeys.current.size > 0)
+    })
+  }, [context, graph.nodes, selectFunction])
+
   const resetGraphView = useCallback(() => setGraphResetToken((value) => value + 1), [])
 
-  const locateInCurrentVsCode = useCallback((node: GraphNode) => {
-    void openInVsCode(context, node).then(() => {
-      setNotice({ kind: 'success', message: `已把 ${node.label} 的位置发送回打开本页的 VS Code 窗口。` })
+  const locateInCurrentEditor = useCallback((node: GraphNode) => {
+    void openInEditor(context, node).then(() => {
+      setNotice({ kind: 'success', message: `已把 ${node.label} 的位置发送回打开本页的编辑器窗口。` })
     }).catch((reason: unknown) => {
       setNotice({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) })
     })
@@ -710,7 +851,7 @@ function App() {
           {workspaceView === 'function' && functionTab === 'calls' ? (
             <button type="button" className="header-reset" onClick={resetGraphView}><RotateCcw size={15} />视图重置</button>
           ) : null}
-          <div className="project-status"><span>项目状态：</span><strong>{isBoundToVsCode ? '已连接' : hasCodeContext ? '代码已读取' : '演示模式'}</strong><i className={`connection-dot ${isBoundToVsCode ? 'is-live' : ''}`} /></div>
+          <div className="project-status"><span>项目状态：</span><strong>{isBoundToEditor && hasCodeContext ? '已连接' : isBoundToEditor ? '等待代码文件' : hasCodeContext ? '未绑定编辑器' : '演示模式'}</strong><i className={`connection-dot ${isBoundToEditor ? 'is-live' : ''}`} /></div>
         </div>
       </header>
 
@@ -727,7 +868,7 @@ function App() {
           <label className="rail-search"><Search size={15} /><input value={functionFilter} onChange={(event) => setFunctionFilter(event.target.value)} placeholder="筛选函数" aria-label="筛选当前文件函数" /></label>
           <div className="function-list">
             {filteredDefinitions.length > 0 ? filteredDefinitions.map((node) => (
-              <button key={node.id} className={node.id === selected?.id ? 'is-selected' : ''} onClick={() => selectFunction(node.id)}>
+              <button key={node.id} className={node.id === selected?.id ? 'is-selected' : ''} onClick={() => selectAndExpandFunction(node.id)}>
                 <Braces size={14} /><span><strong>{node.label}</strong><small>{node.line ? `第 ${node.line} 行` : '函数定义'}</small></span>
               </button>
             )) : <p className="rail-empty">没有匹配的函数。</p>}
@@ -735,8 +876,8 @@ function App() {
         </section> : <section className="rail-section integration-rail"><div className="rail-section__title"><span>后台核心能力</span></div>{integrationStatus?.capabilities.map((capability) => <div key={capability} className="integration-rail__item"><CheckCircle2 size={14} /><span>{capability}</span></div>)}</section>}
 
         <section className="rail-footnote">
-          <div><CircleDot size={14} /><span>{isBoundToVsCode ? '已绑定打开本页的 VS Code 窗口' : hasCodeContext ? '已读取代码上下文，未绑定定位窗口' : '未绑定 VS Code：仅示例界面'}</span></div>
-          <p>调用关系只展示 Clang 可确认的直接调用；不会把回放时间误当成运行路径。</p>
+          <div><CircleDot size={14} /><span>{isBoundToEditor ? '已绑定打开本页的编辑器窗口' : hasCodeContext ? '已读取代码位置，但没有绑定编辑器窗口' : '未绑定编辑器：当前是示例界面'}</span></div>
+          <p>调用关系只展示当前编辑器语言服务本次返回的结果；不会把回放时间误当成运行路径。</p>
         </section>
       </aside>
 
@@ -747,6 +888,8 @@ function App() {
             onTabChange={setFunctionTab}
             graph={graph}
             graphLoading={graphLoading}
+            graphError={graphError}
+            graphMessage={graphMessage}
             selected={selected}
             flow={flow}
             graphKey={graphKey}
@@ -755,8 +898,8 @@ function App() {
             callers={callers}
             context={context}
             canLocate={canLocate}
-            onNodeSelect={selectFunction}
-            onLocate={locateInCurrentVsCode}
+            onNodeSelect={selectAndExpandFunction}
+            onLocate={locateInCurrentEditor}
             evidenceContext={evidenceContext}
             evidenceLoading={evidenceLoading}
             evidenceError={evidenceError}
@@ -780,7 +923,7 @@ function App() {
             onEdit={openModuleEditor}
             onDelete={removeModule}
             onRefresh={() => void loadModules()}
-            onSelectFunction={selectFunction}
+            onSelectFunction={selectAndExpandFunction}
           />
         ) : <IntegrationsWorkspace status={integrationStatus} configuration={openCodeConfiguration} loading={integrationsLoading} onRefresh={() => void loadIntegrations()} onCopy={copyConfiguration} />}
       </section>
@@ -798,20 +941,20 @@ function App() {
             <div className="signature"><Code2 size={15} /><code>{selected.signature}</code></div>
             <div className="location"><FileCode2 size={15} /><span>{selected.relativePath ?? '外部声明'}{selected.line ? ` : ${selected.line}` : ''}</span></div>
             <div className="inspector-metric-grid" aria-label="当前函数关系统计">
-              <InspectorMetric label="直接调用" value={calls.length} />
-              <InspectorMetric label="直接调用它" value={callers.length} />
+              <InspectorMetric label="本次返回：直接调用" value={calls.length} />
+              <InspectorMetric label="本次返回：调用它" value={callers.length} />
               <InspectorMetric label="当前关系图" value={flow.nodes.length} suffix="个函数" />
             </div>
             {selected.kind === 'definition' && canLocate ? (
-              <button className="primary-button locate-button" onClick={() => locateInCurrentVsCode(selected)}><ExternalLink size={16} />在 VS Code 中定位</button>
+              <button className="primary-button locate-button" onClick={() => locateInCurrentEditor(selected)}><ExternalLink size={16} />在编辑器中定位</button>
             ) : selected.kind === 'definition' ? (
-              <div className="quiet-notice">此页面不是从 VS Code 右侧面板打开，无法安全定位回原窗口。</div>
-            ) : <div className="quiet-notice">这是当前编译单元外的声明；工具不会猜测它的实现位置。</div>}
+              <div className="quiet-notice">此页面不是从“历史诊断”面板打开，无法安全定位回原窗口。</div>
+            ) : <div className="quiet-notice">当前编辑器没有返回这个声明的实现位置；工具不会猜测。</div>}
             <InspectorSection title="它直接调用" count={calls.length} icon={<ArrowDownRight size={15} />}>
-              {calls.length ? calls.map((edge) => <ConnectionRow key={edge.id} edge={edge} graph={graph} direction="out" onSelect={selectFunction} />) : <EmptyState text="当前函数没有可确认的直接调用" />}
+              {calls.length ? calls.map((edge) => <ConnectionRow key={edge.id} edge={edge} graph={graph} direction="out" onSelect={selectAndExpandFunction} />) : <EmptyState text="当前编辑器语言服务本次没有返回直接被调用函数" />}
             </InspectorSection>
             <InspectorSection title="直接调用它" count={callers.length} icon={<ArrowUpRight size={15} />}>
-              {callers.length ? callers.map((edge) => <ConnectionRow key={edge.id} edge={edge} graph={graph} direction="in" onSelect={selectFunction} />) : <EmptyState text="当前文件内没有可确认的调用方" />}
+              {callers.length ? callers.map((edge) => <ConnectionRow key={edge.id} edge={edge} graph={graph} direction="in" onSelect={selectAndExpandFunction} />) : <EmptyState text="当前编辑器语言服务本次没有返回直接调用方" />}
             </InspectorSection>
             <InspectorSection title="所属产品模块" count={currentModules.length} icon={<Layers3 size={15} />}>
               {currentModules.length ? currentModules.map((module) => <button className="module-inspector-row" key={module.id} onClick={() => switchToModule(module.id)}><span>{module.name}</span><ChevronRight size={14} /></button>) : <EmptyState text="尚未归入用户定义的产品模块" />}
@@ -820,7 +963,7 @@ function App() {
               <p>最近一次历史数据状态</p>
               {context.runRecordId ? <dl><div><dt>数据时间点</dt><dd>{formatTime(context.requestedTime)}</dd></div><div><dt>已加载字段</dt><dd>{evidenceContext?.fields.length ?? 0} 条</dd></div><div><dt>CSV 回放</dt><dd>{evidenceLoading ? '正在读取' : evidenceError ? '读取失败' : '已加载'}</dd></div></dl> : <span>尚未加载 CSV 回放；不会显示虚构的执行次数或耗时。</span>}
             </section>
-            <div className="fact-note"><ShieldCheck size={16} /><span>调用关系来自 Clang AST。虚函数、回调和函数指针不会显示为确定调用。</span></div>
+            <div className="fact-note"><ShieldCheck size={16} /><span>调用关系来自当前编辑器语言服务。空结果只代表本次没有返回，不表示项目里绝对不存在调用。</span></div>
           </motion.aside>
         )}
       </AnimatePresence>
@@ -844,7 +987,7 @@ function App() {
       <AnimatePresence>
         {notice && <motion.div className={`notice-toast notice-toast--${notice.kind}`} initial={prefersReducedMotion ? false : { opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={prefersReducedMotion ? undefined : { opacity: 0, y: 10 }}><div><strong>{notice.kind === 'error' ? '网页工作台提示' : '操作完成'}</strong><span>{notice.message}</span></div><button aria-label="关闭提示" onClick={() => setNotice(undefined)}><X size={15} /></button></motion.div>}
       </AnimatePresence>
-      <footer className="app-footer"><span>当前显示：{workspaceView === 'function' ? functionTab === 'calls' ? '二维关系图' : functionTab === 'time' ? '历史数据' : functionTab === 'evidence' ? '证据来源' : '函数概览' : workspaceView === 'modules' ? '产品功能模块' : 'AI 与扩展'}</span><span>{workspaceView === 'integrations' ? `VS Code ${integrationStatus?.vscodeWindows.length ?? 0} ／ AI ${integrationStatus?.aiClients.length ?? 0}` : `当前关系节点 ${flow.nodes.length} ／ 调用边 ${flow.edges.length}`}</span><span>数据时间点：{context.runRecordId ? formatTime(context.requestedTime) : '未加载 CSV'}</span></footer>
+      <footer className="app-footer"><span>当前显示：{workspaceView === 'function' ? functionTab === 'calls' ? '二维关系图' : functionTab === 'time' ? '历史数据' : functionTab === 'evidence' ? '证据来源' : '函数概览' : workspaceView === 'modules' ? '产品功能模块' : 'AI 与扩展'}</span><span>{workspaceView === 'integrations' ? `编辑器 ${integrationStatus?.vscodeWindows.length ?? 0} ／ AI ${integrationStatus?.aiClients.length ?? 0}` : `当前关系节点 ${flow.nodes.length} ／ 调用边 ${flow.edges.length}`}</span><span>数据时间点：{context.runRecordId ? formatTime(context.requestedTime) : '未加载 CSV'}</span></footer>
     </main>
   )
 }
@@ -858,18 +1001,18 @@ function IntegrationsWorkspace({ status, configuration, loading, onRefresh, onCo
 }) {
   return <div className="integrations-workspace">
     <section className="integrations-hero">
-      <div><span className="identity-chip"><Cable size={14} />平台核心</span><h2>一个后台，连接所有入口</h2><p>VS Code、网页和 OpenCode / AI 共用字典、CSV、代码分析和缓存，不会各自保存一套互相打架的数据。</p></div>
+      <div><span className="identity-chip"><Cable size={14} />平台核心</span><h2>一个后台，连接所有入口</h2><p>编辑器、网页和 OpenCode / AI 共用字典、CSV、代码分析和缓存，不会各自保存一套互相打架的数据。</p></div>
       <button className="secondary-button" onClick={onRefresh} disabled={loading}><RefreshCw className={loading ? 'spin' : ''} size={16} />{loading ? '正在检查' : '刷新连接状态'}</button>
     </section>
     <section className="integration-metrics">
       <article><span>后台版本</span><strong>{status?.version ?? '正在读取'}</strong><small>API {status?.apiVersion ?? '—'} · {status?.runtimeMode === 'standalone' ? '独立后台' : '扩展备用后台'}</small></article>
-      <article><span>VS Code 窗口</span><strong>{status?.vscodeWindows.length ?? 0}</strong><small>每个网页只回到发起它的窗口</small></article>
+      <article><span>编辑器窗口</span><strong>{status?.vscodeWindows.length ?? 0}</strong><small>每个网页只回到发起它的窗口</small></article>
       <article><span>OpenCode / AI</span><strong>{status?.aiClients.length ?? 0}</strong><small>{status?.aiClients.length ? '当前有 MCP 客户端在线' : '等待 OpenCode 启动 MCP'}</small></article>
     </section>
     <section className="integration-grid">
       <article className="integration-card">
-        <div className="integration-card__head"><div><Cable size={18} /><span><strong>VS Code 扩展</strong><small>代码行内展示与窗口定位</small></span></div><em className={status?.vscodeWindows.length ? 'is-online' : ''}>{status?.vscodeWindows.length ? '已连接' : '未连接'}</em></div>
-        <div className="client-list">{status?.vscodeWindows.length ? status.vscodeWindows.map((client, index) => <div key={`${client.connectedAt}-${index}`}><CheckCircle2 size={14} /><span><strong>{client.clientName}</strong><small>{client.workspaceRoot ?? '未报告工作区'}</small></span></div>) : <p>打开 VS Code 并启用扩展后会在这里出现。</p>}</div>
+        <div className="integration-card__head"><div><Cable size={18} /><span><strong>编辑器连接插件</strong><small>代码行内展示与窗口定位</small></span></div><em className={status?.vscodeWindows.length ? 'is-online' : ''}>{status?.vscodeWindows.length ? '已连接' : '未连接'}</em></div>
+        <div className="client-list">{status?.vscodeWindows.length ? status.vscodeWindows.map((client, index) => <div key={`${client.connectedAt}-${index}`}><CheckCircle2 size={14} /><span><strong>{client.clientName}</strong><small>{client.workspaceRoot ?? '未报告工作区'}</small></span></div>) : <p>打开目标编辑器并启用连接插件后会在这里出现。</p>}</div>
       </article>
       <article className="integration-card">
         <div className="integration-card__head"><div><Activity size={18} /><span><strong>OpenCode + AI 模型</strong><small>通过 MCP 使用同一个后台</small></span></div><em className={status?.aiClients.length ? 'is-online' : ''}>{status?.aiClients.length ? '已连接' : '可配置'}</em></div>
@@ -877,8 +1020,8 @@ function IntegrationsWorkspace({ status, configuration, loading, onRefresh, onCo
       </article>
     </section>
     <section className="opencode-config-card">
-      <div><p>OpenCode 接入</p><h3>使用安装包里的 MCP，不需要 npm</h3><span>配置中的命令已经指向当前电脑安装好的运行时。复制时只合并这一项，不会覆盖其他项目已有的 MCP。</span></div>
-      <code>{configuration?.runtime.mcpPath ?? '正在读取安装路径…'}</code>
+      <div><p>OpenCode 接入</p><h3>MCP 需要用户单独安装</h3><span>先从 GitHub Release 下载 MCP 包并在 OpenCode 所在环境中安装，再复制配置。EXE 不会修改 OpenCode 或 WSL。</span></div>
+      <code>{configuration ? `${configuration.artifactPattern} → ${configuration.packageName}` : '正在读取 MCP 安装说明…'}</code>
       <div className="opencode-actions">
         <button className="primary-button" disabled={!configuration} onClick={() => configuration && onCopy(configuration.current, '新版 OpenCode')}><Copy size={15} />复制新版配置</button>
         <button className="secondary-button" disabled={!configuration} onClick={() => configuration && onCopy(configuration.legacy, 'OpenCode 1.x')}><Copy size={15} />复制 1.x 配置</button>
@@ -897,6 +1040,8 @@ function FunctionWorkspace({
   onTabChange,
   graph,
   graphLoading,
+  graphError,
+  graphMessage,
   selected,
   flow,
   graphKey,
@@ -920,6 +1065,8 @@ function FunctionWorkspace({
   onTabChange: (tab: FunctionTab) => void
   graph: Graph
   graphLoading: boolean
+  graphError?: string
+  graphMessage?: string
   selected?: GraphNode
   flow: { nodes: Node<FlowData>[]; edges: Edge[] }
   graphKey: string
@@ -948,10 +1095,10 @@ function FunctionWorkspace({
   return (
     <div className={`function-workspace function-workspace--${tab}`}>
       <div className="function-identity">
-        <div><span className="identity-chip"><Braces size={14} />函数</span><h2>{selected?.label ?? '没有可分析的函数'}</h2><code>{selected?.signature ?? '请从 VS Code 打开一个已保存的 C/C++ 文件。'}</code></div>
+        <div><span className="identity-chip"><Braces size={14} />函数</span><h2>{selected?.label ?? '还没有可展示的函数'}</h2><code>{selected?.signature ?? '请从编辑器打开一个已保存的 C/C++ 文件。'}</code></div>
         <div className="identity-actions">
-          {selected?.kind === 'definition' && canLocate && <button className="primary-button" onClick={() => onLocate(selected)}><ExternalLink size={16} />在 VS Code 中定位</button>}
-          {graphLoading && <span className="loading-state"><LoaderCircle size={15} />正在用 Clang 分析</span>}
+          {selected?.kind === 'definition' && canLocate && <button className="primary-button" onClick={() => onLocate(selected)}><ExternalLink size={16} />在编辑器中定位</button>}
+          {graphLoading && <span className="loading-state"><LoaderCircle size={15} />正在询问当前编辑器</span>}
         </div>
       </div>
       <div className="tab-row" role="tablist" aria-label="函数工作台页面">
@@ -959,7 +1106,7 @@ function FunctionWorkspace({
       </div>
 
       {tab === 'overview' && <FunctionOverview selected={selected} calls={calls} callers={callers} graph={graph} currentModules={currentModules} onShowModule={onShowModule} canCreateModule={canCreateModule} onCreateModule={onCreateModule} />}
-      {tab === 'calls' && <CallGraphPanel graph={graph} loading={graphLoading} flow={flow} graphKey={graphKey} resetToken={graphResetToken} onNodeSelect={onNodeSelect} onReset={onResetGraph} />}
+      {tab === 'calls' && <CallGraphPanel graph={graph} loading={graphLoading} error={graphError} message={graphMessage} flow={flow} graphKey={graphKey} resetToken={graphResetToken} onNodeSelect={onNodeSelect} onReset={onResetGraph} />}
       {tab === 'time' && <TimeAndFieldsPanel context={context} evidence={evidenceContext} loading={evidenceLoading} error={evidenceError} />}
       {tab === 'evidence' && <EvidenceSourcePanel context={context} evidence={evidenceContext} loading={evidenceLoading} error={evidenceError} />}
     </div>
@@ -976,7 +1123,7 @@ function FunctionOverview({ selected, calls, callers, graph, currentModules, onS
   canCreateModule: boolean
   onCreateModule: () => void
 }) {
-  if (!selected) return <EmptyWorkspace title="没有可展示的函数" detail="请从 VS Code 右侧面板打开网页工作台，系统会根据当前光标所在函数建立局部调用关系。" />
+  if (!selected) return <EmptyWorkspace title="没有可展示的函数" detail="请从编辑器的“历史诊断”面板打开 Web 工作台，系统会根据当前文件位置向编辑器语言服务请求局部调用关系。" />
   return (
     <section className="overview-grid">
       <article className="overview-card overview-card--identity">
@@ -985,7 +1132,7 @@ function FunctionOverview({ selected, calls, callers, graph, currentModules, onS
         <code>{selected.signature}</code>
         <p><FileCode2 size={14} />{selected.relativePath ?? '当前编译单元外的声明'}{selected.line ? ` · 第 ${selected.line} 行` : ''}</p>
       </article>
-      <article className="overview-card overview-card--metric"><span>直接调用它</span><strong>{callers.length}</strong><small>只统计 Clang 可确认的直接调用</small></article>
+      <article className="overview-card overview-card--metric"><span>直接调用它</span><strong>{callers.length}</strong><small>当前编辑器本次返回</small></article>
       <article className="overview-card overview-card--metric"><span>它直接调用</span><strong>{calls.length}</strong><small>不把虚调用、回调当作确定关系</small></article>
       <article className="overview-card overview-card--metric"><span>本次局部图</span><strong>{graph.nodes.filter((node) => node.kind === 'definition').length}</strong><small>{graph.truncated ? '结果为保护性能已截断' : '函数节点'}</small></article>
       <article className="overview-card overview-card--wide">
@@ -1004,6 +1151,8 @@ function FunctionOverview({ selected, calls, callers, graph, currentModules, onS
 function CallGraphPanel({
   graph,
   loading,
+  error,
+  message,
   flow,
   graphKey,
   resetToken,
@@ -1012,18 +1161,24 @@ function CallGraphPanel({
 }: {
   graph: Graph
   loading: boolean
+  error?: string
+  message?: string
   flow: { nodes: Node<FlowData>[]; edges: Edge[] }
   graphKey: string
   resetToken: number
   onNodeSelect: (id: string) => void
   onReset: () => void
 }) {
-  if (!loading && graph.nodes.length === 0) return <EmptyWorkspace title="调用关系暂时不可用" detail="当前文件没有返回可确认的函数，或 Clang 没有接受这份编译数据库。错误提示会说明原因。" />
+  if (!loading && graph.nodes.length === 0) return <EmptyWorkspace title="调用关系暂时不可用" detail={error ?? message ?? '当前编辑器语言服务这次没有返回可展示的函数。这不表示项目里一定没有调用关系。'} />
+  const limitation = specificGraphLimitation(graph)
+  const partial = Boolean(graph.truncated || limitation || (graph.semanticStatus && !['available', 'demo'].includes(graph.semanticStatus)))
+  const statusText = error ?? message ?? graphStatusMessage(graph)
   return (
     <section className="call-graph-panel" aria-label="当前函数的调用关系图">
       <div className="call-graph-toolbar">
-        <div><span className="graph-chip"><Cable size={14} />调用层次关系</span><p>只显示当前函数的直接调用方和被调用函数；点击函数节点可继续展开下一层。</p></div><div className="graph-toolbar__right"><div className="graph-legend"><span><i className="legend-current" />当前函数</span><span><i className="legend-caller" />调用方</span><span><i className="legend-callee" />被调用函数</span></div><button type="button" className="graph-reset" onClick={onReset}><RotateCcw size={14} />重置视图</button></div>
+        <div><span className="graph-chip"><Cable size={14} />调用层次关系</span><p>当前图来自编辑器语言服务；点击函数节点会按需请求并加入下一层。</p></div><div className="graph-toolbar__right"><div className="graph-legend"><span><i className="legend-current" />当前函数</span><span><i className="legend-caller" />调用方</span><span><i className="legend-callee" />被调用函数</span></div><button type="button" className="graph-reset" onClick={onReset}><RotateCcw size={14} />重置视图</button></div>
       </div>
+      {(error || message || partial || graph.semanticStatus === 'demo') && <div className={`graph-availability ${error ? 'is-error' : partial ? 'is-partial' : ''}`}><Info size={14} /><span>{statusText}</span></div>}
       <div className="graph-stage">
         <div className="two-d-graph"><ReactFlow
             key={`${graphKey}:${resetToken}`}
@@ -1041,15 +1196,15 @@ function CallGraphPanel({
             <MiniMap nodeColor={(node) => node.data?.role === 'current' ? '#2b765c' : node.data?.role === 'caller' ? '#c18445' : '#5d9a74'} maskColor="rgba(244, 249, 245, .78)" bgColor="#ffffff" />
             <Controls showInteractive={false} />
           </ReactFlow></div>
-        {loading && <div className="graph-loading"><LoaderCircle size={17} />正在从当前函数展开 Clang AST…</div>}
+        {loading && <div className="graph-loading"><LoaderCircle className="spin" size={17} />正在向当前编辑器请求这一层调用关系…</div>}
       </div>
-      <div className="graph-footnote"><span><Info size={14} />点击任一函数节点可切换诊断对象；定位操作只会回到打开本页的那个 VS Code 窗口。</span><span>{graph.nodes.filter((node) => node.kind === 'definition').length} 个函数节点 · {graph.edges.length} 条可确认调用边</span>{graph.oversizedFunctionCount ? <span>{graph.oversizedFunctionCount} 个复杂函数为保护内存已停止继续展开</span> : graph.omittedExternalCallCount ? <span>另有 {graph.omittedExternalCallCount} 个外部调用未展开</span> : <span>未把外部声明扩成无边界图</span>}</div>
+      <div className="graph-footnote"><span><Info size={14} />定位只会回到打开本页的编辑器窗口；空结果只代表语言服务本次没有返回。</span><span>{graph.nodes.filter((node) => node.kind === 'definition').length} 个函数节点 · {graph.edges.length} 条已返回调用边</span>{graph.oversizedFunctionCount ? <span>{graph.oversizedFunctionCount} 个复杂函数为保护性能已停止继续展开</span> : graph.omittedExternalCallCount ? <span>另有 {graph.omittedExternalCallCount} 个外部调用未展开</span> : <span>当前只展示已请求的局部关系</span>}</div>
     </section>
   )
 }
 
 function TimeAndFieldsPanel({ context, evidence, loading, error }: { context: WorkbenchContext; evidence?: EvidenceContext; loading: boolean; error?: string }) {
-  if (!context.runRecordId) return <EmptyWorkspace title="还没有 CSV 回放上下文" detail="请在 VS Code 右侧面板选择字典、CSV 文件夹和回放时间。网页只读取这次已选择的上下文，不在这里重复配置。" />
+  if (!context.runRecordId) return <EmptyWorkspace title="还没有 CSV 回放上下文" detail="请在编辑器的“历史诊断”面板选择字典、CSV 文件夹和回放时间。网页只读取这次已选择的上下文，不在这里重复配置。" />
   if (loading) return <LoadingWorkspace label="正在读取当前 CSV 回放上下文" />
   if (error) return <EmptyWorkspace title="无法读取当前回放数据" detail={error} />
   const sources = evidence?.run?.sources ?? []
@@ -1061,11 +1216,11 @@ function TimeAndFieldsPanel({ context, evidence, loading, error }: { context: Wo
         <DataMetric label="加载字段规则" value={`${evidence?.fields.length ?? 0} 条`} sub="来自当前已选字典" icon={<MapPinned size={16} />} />
         <DataMetric label="CSV 数据行" value={`${evidence?.replay.totalRows ?? 0}`} sub={sources.length ? `${sources.length} 个数据源` : '数据源未返回摘要'} icon={<Database size={16} />} />
       </div>
-      <article className="explanation-card"><Info size={18} /><div><strong>这页的范围</strong><p>展示的是当前 VS Code 右侧面板加载的字典和 CSV 回放上下文。它不声称每个字段都出现在上方函数里；某个字段是否出现在当前代码行，由 VS Code 中的行内历史值和悬停证据确认。</p></div></article>
+      <article className="explanation-card"><Info size={18} /><div><strong>这页的范围</strong><p>展示的是当前编辑器“历史诊断”面板加载的字典和 CSV 回放上下文。它不声称每个字段都出现在上方函数里；某个字段是否出现在当前代码行，由编辑器中的行内历史值和悬停证据确认。</p></div></article>
       <section className="field-table-card">
         <div className="section-heading"><div><p>字典已加载字段</p><h3>可用于回放的代码字段</h3></div><span>{evidence?.fields.length ?? 0} 条</span></div>
         {evidence?.fields.length ? <div className="field-list">{evidence.fields.slice(0, 40).map((field) => <div className="field-row" key={`${fieldLabel(field.codeField)}:${field.instanceCount}`}><code>{fieldLabel(field.codeField)}</code><span>{field.instanceCount > 1 ? `${field.instanceCount} 个实例` : '单个值'}</span><small>{field.codeField.definitionPath ?? '定义文件未返回'}</small></div>)}</div> : <EmptyState text="当前字典没有返回字段规则" />}
-        {(evidence?.fields.length ?? 0) > 40 && <p className="table-note">为保持页面可读性，此处显示前 40 条；完整字段仍由 VS Code 的代码位置按需匹配。</p>}
+        {(evidence?.fields.length ?? 0) > 40 && <p className="table-note">为保持页面可读性，此处显示前 40 条；完整字段仍由编辑器中的代码位置按需匹配。</p>}
       </section>
     </section>
   )
@@ -1077,7 +1232,7 @@ function EvidenceSourcePanel({ context, evidence, loading, error }: { context: W
   if (error) return <EmptyWorkspace title="无法读取字段规则来源" detail={error} />
   return (
     <section className="evidence-workspace">
-      <article className="evidence-principle"><ShieldCheck size={20} /><div><h3>证据分层，不猜测</h3><p>字典说明“CSV 某列对应什么代码对象”；CSV 说明“某个时间点的值”；Clang 说明“代码中实际出现了什么函数和字段”。页面会把三件事分开显示。</p></div></article>
+      <article className="evidence-principle"><ShieldCheck size={20} /><div><h3>证据分层，不猜测</h3><p>字典说明“CSV 某列对应什么代码对象”；CSV 说明“某个时间点的值”；当前编辑器语言服务说明“这次识别到了哪些函数和字段”。页面会把三件事分开显示。</p></div></article>
       <section className="evidence-list-card">
         <div className="section-heading"><div><p>字段字典规则</p><h3>每一条规则都可追溯</h3></div><span>{evidence?.fields.length ?? 0} 条</span></div>
         {evidence?.fields.length ? <div className="evidence-list">{evidence.fields.map((field) => <article key={`${fieldLabel(field.codeField)}:${field.instanceCount}`}><div><code>{fieldLabel(field.codeField)}</code><span className="confidence-chip">{field.confidence === 'confirmed' ? '已确认' : field.confidence ?? '字典规则'}</span></div><dl><div><dt>字典位置</dt><dd>{field.dictionaryFile ?? field.mappingFile ?? context.dictionaryName ?? context.dictionaryId ?? '当前选择的字典'}{field.dictionaryRow ?? field.mappingFileRow ? ` 第 ${field.dictionaryRow ?? field.mappingFileRow} 行` : ''}</dd></div><div><dt>定义位置</dt><dd>{field.codeField.definitionPath ?? '未返回定义文件'}</dd></div><div><dt>CSV 实例</dt><dd>{field.instanceCount} 个</dd></div></dl></article>)}</div> : <EmptyState text="当前字典没有返回可追溯的字段规则" />}
@@ -1107,7 +1262,7 @@ function ModulesWorkspace({ modules, selectedModule, selectedModuleId, graph, lo
         <div><span className="identity-chip"><Layers3 size={14} />用户定义</span><h2>用产品能力组织函数，不用目录冒充模块</h2><p>一个模块是产品的一项真实能力，例如“母线目标值分配”；它可以关联多个跨目录函数，同一个函数也可以属于多个模块。</p></div>
         <div className="modules-hero__actions">{canEdit && <button className="secondary-button" onClick={onRefresh}><RefreshCw size={15} />重新读取</button>}{canEdit && <button className="primary-button" onClick={onCreate}><Plus size={16} />新建功能模块</button>}</div>
       </section>
-      {!canEdit && <div className="workspace-warning"><Info size={16} />请从 VS Code 打开这页，系统才能把模块保存到当前代码仓库。</div>}
+      {!canEdit && <div className="workspace-warning"><Info size={16} />请从编辑器打开这页，系统才能把模块保存到当前代码仓库。</div>}
       <div className="modules-layout">
         <section className="module-list-card">
           <div className="section-heading"><div><p>当前产品的模块</p><h3>{loading ? '正在读取…' : `${modules.length} 个功能模块`}</h3></div></div>

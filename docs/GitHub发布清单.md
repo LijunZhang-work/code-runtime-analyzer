@@ -1,11 +1,11 @@
 # GitHub 发布清单
 
-这篇写给准备提交代码的人。它只回答“哪些文件能上传、哪些不能上传”，以及如何让 GitHub 自动生成统一安装程序和备用 `.vsix`；普通使用者不需要阅读。
+这篇写给准备提交代码的人。它只回答“哪些文件能上传、哪些不能上传”，以及如何让 GitHub 自动生成后台 EXE、独立 VSIX 和独立 MCP 包；普通使用者不需要阅读。
 
 ## 可以提交
 
 - `backend/src`、`backend/test`、`backend/dictionaries`：后端源码、测试和产品字典；
-- `extension/src`、`extension/media` 及扩展配置：VS Code 扩展源码；
+- `extension/src`、`extension/media` 及扩展配置：编辑器扩展源码；
 - `web/src`、`web/public` 及前端配置：网页源码；
 - `docs`、`README.md`：说明和设计文档；
 - `labs`、`examples`：确认是虚构数据的最小演示；
@@ -35,14 +35,15 @@
 
 ## 发布给普通用户
 
-普通用户不下载源码。正式发布时，只需要在已经检查通过的提交上创建一个版本标签，例如 `v0.10.0`，并把该标签推送到 GitHub。
+正式发布时，在已经检查通过的提交上创建一个版本标签，例如 `v0.10.0`，并把该标签推送到 GitHub。用户可以下载 Release 里的现成包；Release 下载很慢时，也可以下载同一版本源码后本地生成。
 
-GitHub Actions 会自动完成下面五件事：
+GitHub Actions 会自动完成下面六件事：
 
 1. 安装构建依赖、构建网页和扩展；
-2. 生成 `Code-Runtime-Analyzer-Setup-v0.10.0.exe`，其中包含独立后台、Web、MCP、运行时和 VS Code 扩展；
-3. 同时生成一个只用于扩展更新和备用体验的 `.vsix`；
-4. 生成 `SHA256SUMS.txt`，方便核对下载文件没有损坏或被替换；
-5. 在 GitHub 的 **Releases** 页面创建对应版本，并把安装包和校验文件放进去。
+2. 生成 `Code-Runtime-Analyzer-Setup-v0.10.0.exe`，其中只包含独立后台、后台控制中心、Web 和运行时，不包含 MCP，不查找也不修改任何编辑器；
+3. 从同一份源码生成 `Code-Runtime-Analyzer-默认右侧栏-v0.10.0.vsix` 和 `Code-Runtime-Analyzer-兼容布局-v0.10.0.vsix`；用户只安装其中一个；
+4. 单独生成 `Code-Runtime-Analyzer-MCP-v0.10.0.tgz`，供用户或 AI 安装到 OpenCode 所在环境；
+5. 生成 `SHA256SUMS.txt`，方便核对下载文件没有损坏或被替换；
+6. 在 GitHub 的 **Releases** 页面创建对应版本，并把四个安装包和校验文件放进去。
 
-这样普通用户只需双击 `.exe`。版本号只在真正要发给用户的新安装包时才增加，不因为日常的小修改频繁变化。
+这样用户可以直接下载四个现成安装包，也可以下载源码后运行 `.\build.ps1 all` 自己生成。所有文件应使用同一个版本号。版本号只在真正要发给用户的新安装包时才增加，不因为日常的小修改频繁变化。

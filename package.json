@@ -7,6 +7,7 @@
     "install:all": "npm --prefix backend ci && npm --prefix extension ci && npm --prefix web ci",
     "mcp": "npm --prefix backend run mcp",
     "prepare:extension": "npm --prefix web run build && node scripts/prepare-extension.mjs",
+    "prepare:mcp-package": "node scripts/prepare-mcp-package.mjs",
     "prepare:windows-distribution": "node scripts/prepare-windows-distribution.mjs",
     "prepare:test-fixture": "node scripts/prepare-test-fixture.mjs",
     "test": "npm run prepare:test-fixture && npm --prefix backend test && npm --prefix extension run compile && npm --prefix web run lint && npm --prefix web run build"

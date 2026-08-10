@@ -98,7 +98,7 @@ export function createDiagnosticServer({
     // therefore protected by the revision check below.
     if (!activeData) return;
     if (body.runRecordId !== activeData.runRecordId || body.dataRevision !== activeData.dataRevision) {
-      throw new Error('当前数据已重新加载；请使用右侧面板的最新加载结果再试一次');
+      throw new Error('当前数据已重新加载；请使用“历史诊断”面板的最新加载结果再试一次');
     }
   };
   const server = createServer(async (request, response) => {
@@ -112,7 +112,7 @@ export function createDiagnosticServer({
           apiVersion: API_VERSION,
           runtimeMode,
           instanceId: instanceId || undefined,
-          capabilities: ['history-replay', 'code-analysis', 'web-workbench', 'vscode-session', 'mcp-shared-core']
+          capabilities: ['history-replay', 'code-analysis', 'web-workbench', 'vscode-session', 'editor-semantic-rpc', 'mcp-shared-core']
         });
       }
       if (request.method === 'GET' && (url.pathname === '/workbench' || url.pathname.startsWith('/workbench/'))) {
@@ -146,6 +146,60 @@ export function createDiagnosticServer({
           response.off('close', abort);
         }
       }
+      if (request.method === 'POST' && url.pathname === '/api/web/editor/semantic') {
+        const body = await bodyOf(request);
+        if (typeof body.windowSessionId !== 'string' || body.windowSessionId.trim() === '') {
+          throw new Error('编辑器语义请求缺少 windowSessionId');
+        }
+        if (typeof body.operation !== 'string' || body.operation.trim() === '') {
+          throw new Error('编辑器语义请求缺少 operation');
+        }
+        if (!Object.hasOwn(body, 'payload')) throw new Error('编辑器语义请求缺少 payload');
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        request.once('aborted', abort);
+        response.once('close', abort);
+        try {
+          const result = await webSessionBroker.requestSemantic(body.windowSessionId, {
+            operation: body.operation,
+            payload: body.payload,
+            timeoutMs: body.timeoutMs,
+            signal: controller.signal
+          });
+          if (response.destroyed) return;
+          if (result.status === 'ok' || result.status === 'noEvidence') return reply(response, 200, result);
+          const statusCode = result.status === 'timeout' ? 504
+            : result.status === 'queueFull' ? 429
+              : result.status === 'unsupported' ? 501
+                : result.status === 'notReady' ? 503
+                  : result.status === 'error' ? 502
+                    : result.status === 'invalid' ? 400 : 409;
+          const fallbackMessage = result.status === 'unsupported'
+            ? '当前编辑器语言服务不支持这项语义能力。'
+            : result.status === 'notReady'
+              ? '编辑器语言服务尚未就绪，请稍后重试。'
+              : result.status === 'error'
+                ? '编辑器语言服务处理请求失败。'
+                : '编辑器语义请求未能完成。';
+          return reply(response, statusCode, { ...result, error: result.message || fallbackMessage });
+        } finally {
+          request.off('aborted', abort);
+          response.off('close', abort);
+        }
+      }
+      if (request.method === 'POST' && url.pathname === '/api/web/editor/semantic/respond') {
+        const body = await bodyOf(request);
+        if (typeof body.windowSessionId !== 'string' || body.windowSessionId.trim() === '') {
+          throw new Error('编辑器语义响应缺少 windowSessionId');
+        }
+        if (typeof body.requestId !== 'string' || body.requestId.trim() === '') {
+          throw new Error('编辑器语义响应缺少 requestId');
+        }
+        const result = webSessionBroker.respondSemantic(body.windowSessionId, body);
+        if (result.status === 'accepted') return reply(response, 200, { accepted: true, requestId: result.requestId });
+        const statusCode = result.status === 'invalid' ? 400 : 409;
+        return reply(response, statusCode, { ...result, error: result.message });
+      }
       if (request.method === 'POST' && url.pathname === '/api/web/open-in-vscode') {
         const body = await bodyOf(request);
         if (typeof body.filePath !== 'string' || body.filePath.trim() === '') {
@@ -160,13 +214,13 @@ export function createDiagnosticServer({
         if (typeof onWebOpen === 'function' && typeof webSessionId === 'string') {
           if (body.windowSessionId !== webSessionId) {
             return reply(response, 403, {
-              error: '此网页与当前 VS Code 窗口的绑定已失效。请关闭网页后从原 VS Code 窗口重新打开。'
+              error: '此网页与当前编辑器窗口的绑定已失效。请关闭网页后从原编辑器窗口重新打开。'
             });
           }
           onWebOpen(location);
         } else if (!webSessionBroker.publish(body.windowSessionId, location)) {
           return reply(response, 409, {
-            error: '此网页没有连接到当前 VS Code 窗口，或窗口会话已经结束。请从 VS Code 右侧“打开网页工作台”重新进入。'
+            error: '此网页没有连接到当前编辑器窗口，或窗口会话已经结束。请从编辑器里的“打开网页工作台”重新进入。'
           });
         }
         return reply(response, 202, { accepted: true });
@@ -190,7 +244,7 @@ export function createDiagnosticServer({
           runtimeMode,
           vscodeWindows: webSessionBroker.summary(),
           aiClients: integrationRegistry.summary(),
-          capabilities: ['VS Code 代码内展示', 'Web 函数与模块工作台', 'OpenCode / AI MCP', '字段字典与 CSV 历史回放']
+          capabilities: ['编辑器代码内展示', 'Web 函数与模块工作台', 'OpenCode / AI MCP', '字段字典与 CSV 历史回放']
         });
       }
       if (request.method === 'POST' && url.pathname === '/api/integrations/opencode-config') {

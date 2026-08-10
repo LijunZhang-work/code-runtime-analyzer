@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDiagnosticServer } from '../src/server.mjs';
 
-test('standalone backend reports client capabilities and generates installed OpenCode configuration', async (t) => {
+test('standalone backend reports clients and generates configuration for the separately installed MCP', async (t) => {
   const server = createDiagnosticServer();
   await new Promise((resolvePromise, rejectPromise) => {
     server.once('error', rejectPromise);
@@ -27,8 +27,8 @@ test('standalone backend reports client capabilities and generates installed Ope
 
   const generated = await fetch(`${baseUrl}/api/integrations/opencode-config`, { method: 'POST' }).then((response) => response.json());
   assert.equal(generated.serverName, 'code-runtime-analyzer');
+  assert.equal(generated.packageName, 'code-runtime-analyzer-mcp');
   assert.equal(generated.current.mcp.servers['code-runtime-analyzer'].environment.CODE_RUNTIME_ANALYZER_URL, baseUrl);
   assert.equal(generated.legacy.mcp['code-runtime-analyzer'].environment.CODE_RUNTIME_ANALYZER_URL, baseUrl);
-  assert.ok(generated.current.mcp.servers['code-runtime-analyzer'].command[0]);
-  assert.ok(generated.current.mcp.servers['code-runtime-analyzer'].command[1].endsWith('mcp-server.mjs'));
+  assert.deepEqual(generated.current.mcp.servers['code-runtime-analyzer'].command, ['code-runtime-analyzer-mcp']);
 });

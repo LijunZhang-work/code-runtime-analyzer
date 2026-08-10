@@ -1,22 +1,23 @@
-# Code Runtime Analyzer VS Code 扩展
+# Code Runtime Analyzer 编辑器扩展
 
-普通用户请到 [GitHub Releases](https://github.com/LijunZhang-work/code-runtime-analyzer/releases/latest) 下载 `Code-Runtime-Analyzer-Setup-v*.exe`。一个安装程序会同时安装：
+这个 VSIX 是编辑器与 Code Runtime Analyzer 后台之间的连接器。它负责：
 
-- 独立后台核心；
-- 网页工作台；
-- OpenCode/AI 使用的 MCP 服务；
-- 自带运行环境；
-- VS Code 扩展。
+- 在代码行末显示已经确认匹配的 CSV 历史值；
+- 使用当前编辑器已有的语言服务确认定义、类型、引用和函数调用关系；
+- 把 Web 工作台绑定到打开它的这个编辑器窗口；
+- 自动检测当前编辑器真正可用的能力，并给出简短结论和详细解释。
 
-普通用户不需要安装 Node.js，也不需要运行 npm。
+EXE 只安装独立后台、后台控制中心和 Web，不会自动安装扩展或 MCP。普通用户请从 [GitHub Releases](https://github.com/LijunZhang-work/code-runtime-analyzer/releases/latest) 下载同一版本的 EXE，并在实际使用的编辑器中单独安装一个 VSIX：
 
-同一发布页中的 `.vsix` 只是“单独安装或更新 VS Code 扩展”的备用包。只安装 `.vsix` 时，扩展可以使用内嵌后台，但不会得到完整的独立后台、统一网页和 OpenCode/AI 接入能力。
+- `Code-Runtime-Analyzer-默认右侧栏-v*.vsix`：优先安装；
+- `Code-Runtime-Analyzer-兼容布局-v*.vsix`：默认版被拒绝安装，或重新加载后仍找不到“历史诊断”时使用；入口可能在左侧活动栏。
 
-这个目录保存的是扩展源码。只有维护者打包时，才从仓库根目录运行：
+两个 VSIX 的扩展源码和自身功能相同、扩展 ID 相同，只安装一个。编辑器实际能提供多少类型和调用关系能力，以安装后的自动检测为准。普通用户不需要 Node.js 或 npm。
+
+维护者在仓库根目录生成两个扩展包：
 
 ```powershell
-npm run prepare:extension
-npm --prefix extension run compile
+.\build.ps1 extension
 ```
 
-GitHub 收到 `v*` 版本标签后会同时生成 Windows 一键安装程序和 `.vsix` 备用包。扩展中的 `backend/` 是打包时临时生成的目录，不在 Git 中保存。
+完整的新手安装和检测流程见仓库中的 `docs/工具使用指南.md`。

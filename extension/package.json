@@ -11,7 +11,7 @@
     "url": "https://github.com/LijunZhang-work/code-runtime-analyzer/issues"
   },
   "homepage": "https://github.com/LijunZhang-work/code-runtime-analyzer#readme",
-  "engines": { "vscode": "^1.131.0" },
+  "engines": { "vscode": "^1.106.0" },
   "categories": ["Other"],
   "activationEvents": ["onLanguage:c", "onLanguage:cpp", "onUri", "onView:cppCsvDiagnostics.diagnosticsPanel"],
   "main": "./out/extension.js",
@@ -27,7 +27,10 @@
       { "command": "cppCsvDiagnostics.load2048Demo", "title": "C/C++ Diagnostics: 加载 2048 演示" },
       { "command": "cppCsvDiagnostics.openTrend", "title": "C/C++ Diagnostics: 打开字段趋势" },
       { "command": "cppCsvDiagnostics.showDataQuality", "title": "C/C++ Diagnostics: 查看 CSV 数据质量" },
-      { "command": "cppCsvDiagnostics.openWebWorkbench", "title": "C/C++ Diagnostics: 打开网页工作台" }
+      { "command": "cppCsvDiagnostics.openWebWorkbench", "title": "C/C++ Diagnostics: 打开网页工作台" },
+      { "command": "cppCsvDiagnostics.runCompatibilityCheck", "title": "C/C++ Diagnostics: 重新检测编辑器兼容性" },
+      { "command": "cppCsvDiagnostics.showCompatibilityReport", "title": "C/C++ Diagnostics: 查看兼容性详细解释" },
+      { "command": "cppCsvDiagnostics.copyCompatibilityReport", "title": "C/C++ Diagnostics: 复制兼容性诊断信息" }
     ],
     "viewsContainers": {
       "secondarySidebar": [
@@ -50,21 +53,22 @@
     "configuration": {
       "title": "C/C++ Historical Diagnostics",
       "properties": {
-        "cppCsvDiagnostics.backendMode": { "type": "string", "enum": ["auto", "standalone", "embedded"], "enumDescriptions": ["优先连接独立后台，未安装时使用扩展内置备用后台", "只连接独立后台，连接失败时明确报错", "只使用扩展内置备用后台"], "default": "auto", "description": "后台连接方式。统一安装版使用独立后台；内置后台只用于单独安装 VSIX 时的备用体验。" },
-        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "独立 Code Runtime Analyzer 后台地址。统一安装版保持默认值即可。" },
-        "cppCsvDiagnostics.compileCommandsPath": { "type": "string", "default": "", "description": "可选的 compile_commands.json 路径。为空时自动在工作区查找（优先根目录和 build 目录）；找到多个时会提示选择并记住当前工作区的选择。" },
-        "cppCsvDiagnostics.clangdPath": { "type": "string", "default": "", "description": "可选的 clangd 可执行文件路径。为空时优先使用编译器同目录的 clangd，再尝试系统 PATH。" },
-        "cppCsvDiagnostics.functionNames": { "type": "array", "items": { "type": "string" }, "default": [], "description": "可选的函数名限制；为空时由后端发现当前文件中的函数候选，再由 Clang 逐个验证。" }
+        "cppCsvDiagnostics.backendMode": { "type": "string", "enum": ["standalone", "auto", "embedded"], "enumDescriptions": ["只连接 EXE 安装的独立后台，连接失败时明确报错", "优先连接独立后台，未安装时使用扩展内置备用后台", "只使用扩展内置备用后台"], "default": "standalone", "description": "后台连接方式。正式使用请选择独立后台；内置后台只供开发或临时排查。" },
+        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "独立 Code Runtime Analyzer 后台地址。统一安装版保持默认值即可。" }
       }
     }
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package:default": "npm run compile && node ../scripts/prepare-extension.mjs --package default",
+    "package:compatible": "npm run compile && node ../scripts/prepare-extension.mjs --package compatible",
+    "package:all": "npm run compile && node ../scripts/prepare-extension.mjs --package all"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.9.2",
     "typescript": "^5.0.0"
   }
 }

@@ -1,10 +1,23 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
 import { pathToFileURL } from 'url';
 import { Worker } from 'worker_threads';
 import { closeTrendPanel, showTrendPanel } from './trend-panel';
 import { DiagnosticsPanelController } from './diagnostics-panel';
+import {
+  buildEditorCallGraph,
+  indexMappedFieldsWithEditor,
+  probeEditorCapabilities,
+  type EditorCapabilityProbe,
+  type SemanticCapability,
+  type SemanticState
+} from './editor-semantic';
+import {
+  CompatibilityReportController,
+  type CompatibilityItem,
+  type CompatibilityItemState,
+  type CompatibilityReport
+} from './compatibility-report';
 
 type ReplaySelection = { runRecordId: string; dataRevision: string; requestedTime: string };
 type DictionarySummary = {
@@ -188,6 +201,11 @@ type WebOpenLocation = {
   line?: number;
   column?: number;
 };
+type WebSemanticRequest = {
+  requestId: string;
+  operation: string;
+  payload: unknown;
+};
 
 let selection: ReplaySelection | undefined;
 let dictionaryFolder: DictionaryFolderState = {};
@@ -198,11 +216,11 @@ let backendWindowSessionId: string | undefined;
 let backendConnectionMode: 'standalone' | 'embedded' | undefined;
 let standaloneSessionAbort: AbortController | undefined;
 let webLocationListener: ((location: WebOpenLocation) => void) | undefined;
+let webSemanticRequestListener: ((request: WebSemanticRequest) => void) | undefined;
 let backendStartup: Promise<void> = Promise.resolve();
 let backendStartupError: Error | undefined;
 const REPLAY_STATE_KEY = 'replaySelection';
 const DICTIONARY_FOLDER_STATE_KEY = 'dictionaryFolderSelection';
-const COMPILE_COMMANDS_STATE_KEY = 'compileCommandsPathSelection';
 const DEFAULT_BACKEND_URL = 'http://127.0.0.1:47831';
 const EXPECTED_BACKEND_API_VERSION = '0.10';
 const hoverEvidence = new Map<string, HoverEvidence[]>();
@@ -214,8 +232,10 @@ const decoration = vscode.window.createTextEditorDecorationType({
   }
 });
 
-function workspaceRoot(): string | undefined {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+function workspaceRoot(uri?: vscode.Uri): string | undefined {
+  const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+  return (target ? vscode.workspace.getWorkspaceFolder(target) : undefined)?.uri.fsPath
+    ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
 function settings() {
@@ -288,9 +308,8 @@ async function embeddedWorkerModulePath(context: vscode.ExtensionContext): Promi
 
 async function startEmbeddedBackend(context: vscode.ExtensionContext): Promise<void> {
   const modulePath = await embeddedWorkerModulePath(context);
-  const webSessionId = randomUUID();
   const worker = new Worker(pathToFileURL(modulePath), {
-    workerData: { host: '127.0.0.1', port: 0, webSessionId }
+    workerData: { host: '127.0.0.1', port: 0 }
   });
   try {
     const ready = await new Promise<{ host: string; port: number }>((resolvePromise, rejectPromise) => {
@@ -316,12 +335,10 @@ async function startEmbeddedBackend(context: vscode.ExtensionContext): Promise<v
     });
     embeddedBackend = worker;
     embeddedBackendUrl = `http://${ready.host}:${ready.port}`;
-    activeBackendUrl = embeddedBackendUrl;
-    backendWindowSessionId = webSessionId;
-    backendConnectionMode = 'embedded';
     worker.on('message', (message: { type?: string; location?: WebOpenLocation }) => {
       if (message.type === 'web-open-function' && message.location) webLocationListener?.(message.location);
     });
+    await connectBackendSession(embeddedBackendUrl, 'embedded');
   } catch (error) {
     backendWindowSessionId = undefined;
     backendConnectionMode = undefined;
@@ -333,40 +350,72 @@ async function startEmbeddedBackend(context: vscode.ExtensionContext): Promise<v
 
 async function closeStandaloneSession(): Promise<void> {
   const controller = standaloneSessionAbort;
-  const sessionId = backendConnectionMode === 'standalone' ? backendWindowSessionId : undefined;
-  const url = backendConnectionMode === 'standalone' ? activeBackendUrl : undefined;
+  const sessionId = backendWindowSessionId;
+  const url = activeBackendUrl;
   standaloneSessionAbort = undefined;
   controller?.abort();
   if (url && sessionId) {
     await fetchJsonAt(url, '/api/web/sessions/unregister', { windowSessionId: sessionId }).catch(() => undefined);
   }
-  if (backendConnectionMode === 'standalone') {
-    activeBackendUrl = undefined;
-    backendWindowSessionId = undefined;
-    backendConnectionMode = undefined;
-  }
+  activeBackendUrl = undefined;
+  backendWindowSessionId = undefined;
+  backendConnectionMode = undefined;
 }
 
-async function connectStandaloneSession(url: string): Promise<void> {
+async function connectBackendSession(url: string, mode: 'standalone' | 'embedded'): Promise<void> {
   await closeStandaloneSession();
   const registered = await fetchJsonAt<{ windowSessionId: string }>(url, '/api/web/sessions/register', {
-    clientName: 'VS Code 扩展',
-    workspaceRoot: workspaceRoot()
+    clientName: '编辑器连接插件',
+    workspaceRoot: workspaceRoot(),
+    capabilities: {
+      semanticBridge: true,
+      operations: ['callHierarchy'],
+      revealLocation: true,
+      lineDecorations: true
+    },
+    environment: {
+      appName: vscode.env.appName,
+      appVersion: vscode.version,
+      appHost: vscode.env.appHost,
+      uriScheme: vscode.env.uriScheme
+    }
   });
   activeBackendUrl = url;
   backendWindowSessionId = registered.windowSessionId;
-  backendConnectionMode = 'standalone';
+  backendConnectionMode = mode;
   const controller = new AbortController();
   standaloneSessionAbort = controller;
   void (async () => {
     while (!controller.signal.aborted && backendWindowSessionId === registered.windowSessionId) {
       try {
-        const result = await fetchJsonAt<{ status: string; location?: WebOpenLocation }>(url, '/api/web/sessions/poll', {
+        const result = await fetchJsonAt<{
+          status: string;
+          location?: WebOpenLocation;
+          requestId?: string;
+          operation?: string;
+          payload?: unknown;
+        }>(url, '/api/web/sessions/poll', {
           windowSessionId: registered.windowSessionId,
           timeoutMs: 20_000
         }, controller.signal);
         if (result.status === 'event' && result.location) webLocationListener?.(result.location);
-        if (result.status === 'missing' || result.status === 'closed') break;
+        if (result.status === 'semanticRequest' && result.requestId && result.operation) {
+          webSemanticRequestListener?.({
+            requestId: result.requestId,
+            operation: result.operation,
+            payload: result.payload
+          });
+        }
+        if (result.status === 'missing' || result.status === 'closed') {
+          if (backendWindowSessionId === registered.windowSessionId) {
+            backendWindowSessionId = undefined;
+            activeBackendUrl = undefined;
+            backendConnectionMode = undefined;
+            backendStartupError = new Error('后台已经重启或当前窗口会话已失效，请重新检测后自动连接。');
+          }
+          if (standaloneSessionAbort === controller) standaloneSessionAbort = undefined;
+          break;
+        }
       } catch (error) {
         if (controller.signal.aborted) break;
         await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1_000));
@@ -377,23 +426,24 @@ async function connectStandaloneSession(url: string): Promise<void> {
 
 async function ensureBackendAvailable(context: vscode.ExtensionContext): Promise<void> {
   const configuredUrl = settings().get<string>('backendUrl', DEFAULT_BACKEND_URL).replace(/\/$/, '');
-  const mode = settings().get<'auto' | 'standalone' | 'embedded'>('backendMode', 'auto');
+  const mode = settings().get<'auto' | 'standalone' | 'embedded'>('backendMode', 'standalone');
   if (mode !== 'embedded') {
     const health = await backendHealth(configuredUrl);
     if (compatibleBackend(health)) {
-      await connectStandaloneSession(configuredUrl);
+      await connectBackendSession(configuredUrl, 'standalone');
       return;
     }
     if (health && !compatibleBackend(health)) {
       throw new Error(`已找到后台 ${configuredUrl}，但版本不兼容：需要 API ${EXPECTED_BACKEND_API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。`);
     }
     if (mode === 'standalone' || !isDefaultBackendUrl(configuredUrl)) {
-      throw new Error(`无法连接独立后台 ${configuredUrl}。请启动 Code Runtime Analyzer 后台，或把 backendMode 改为“自动”。`);
+      throw new Error(`无法连接独立后台 ${configuredUrl}。请从 Windows 开始菜单打开“Code Runtime Analyzer → 后台控制中心”，确认后台正在运行。`);
     }
   }
   if (embeddedBackendUrl && compatibleBackend(await backendHealth(embeddedBackendUrl))) {
-    activeBackendUrl = embeddedBackendUrl;
-    backendConnectionMode = 'embedded';
+    if (!backendWindowSessionId || activeBackendUrl !== embeddedBackendUrl) {
+      await connectBackendSession(embeddedBackendUrl, 'embedded');
+    }
     return;
   }
   await startEmbeddedBackend(context);
@@ -431,60 +481,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function compileCommandsRank(uri: vscode.Uri): number {
-  const folder = vscode.workspace.getWorkspaceFolder(uri);
-  const relativePath = folder
-    ? path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/')
-    : vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
-  if (relativePath === 'compile_commands.json') return 0;
-  if (relativePath.startsWith('build/')) return 1;
-  return 2;
-}
-
-async function discoverCompileCommandsPath(context: vscode.ExtensionContext): Promise<string | undefined> {
-  const configured = settings().get<string>('compileCommandsPath', '').trim();
-  if (configured) {
-    return path.isAbsolute(configured)
-      ? configured
-      : workspaceRoot() ? path.resolve(workspaceRoot()!, configured) : configured;
-  }
-
-  const remembered = context.workspaceState.get<string>(COMPILE_COMMANDS_STATE_KEY);
-  if (remembered && await fileExists(remembered)) return remembered;
-  if (remembered) await context.workspaceState.update(COMPILE_COMMANDS_STATE_KEY, undefined);
-
-  const candidates = await vscode.workspace.findFiles(
-    '**/compile_commands.json',
-    '**/{node_modules,.git}/**',
-    100
-  );
-  candidates.sort((left, right) => {
-    const rankDifference = compileCommandsRank(left) - compileCommandsRank(right);
-    if (rankDifference !== 0) return rankDifference;
-    return vscode.workspace.asRelativePath(left, true).localeCompare(vscode.workspace.asRelativePath(right, true));
-  });
-  if (candidates.length === 0) return undefined;
-
-  let selected = candidates[0];
-  if (candidates.length > 1) {
-    const items = candidates.map((uri) => ({
-      label: vscode.workspace.asRelativePath(uri, true),
-      description: compileCommandsRank(uri) === 0 ? '工作区根目录' : compileCommandsRank(uri) === 1 ? 'build 目录' : '其他目录',
-      detail: uri.fsPath,
-      uri
-    }));
-    const choice = await vscode.window.showQuickPick(items, {
-      title: '选择 C/C++ 编译数据库',
-      placeHolder: '找到多个 compile_commands.json，请选择当前工程使用的一个'
-    });
-    if (!choice) return undefined;
-    selected = choice.uri;
-  }
-
-  await context.workspaceState.update(COMPILE_COMMANDS_STATE_KEY, selected.fsPath);
-  return selected.fsPath;
 }
 
 function compactValues(values: InstanceEvidence[]): string {
@@ -703,12 +699,20 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('C/C++ Historical Diagnostics');
   const qualityOutput = vscode.window.createOutputChannel('C/C++ Diagnostics - Data Quality');
   const diagnosticsPanel = new DiagnosticsPanelController();
-  backendStartupError = undefined;
-  backendStartup = ensureBackendAvailable(context).catch((error) => {
-    backendStartupError = error instanceof Error ? error : new Error(String(error));
-    output.appendLine(`诊断后端不可用：${backendStartupError.message}`);
-    void vscode.window.showErrorMessage(`诊断后端不可用：${backendStartupError.message}`);
-  });
+  const compatibilityReport = new CompatibilityReportController();
+  let compatibilityTimer: NodeJS.Timeout | undefined;
+  let compatibilityGeneration = 0;
+  function beginBackendConnection(showNotification: boolean): Promise<void> {
+    backendStartupError = undefined;
+    const attempt = ensureBackendAvailable(context).catch((error) => {
+      backendStartupError = error instanceof Error ? error : new Error(String(error));
+      output.appendLine(`诊断后端不可用：${backendStartupError.message}`);
+      if (showNotification) void vscode.window.showErrorMessage(`诊断后端不可用：${backendStartupError.message}`);
+    });
+    backendStartup = attempt;
+    return attempt;
+  }
+  backendStartup = beginBackendConnection(true);
   diagnosticsPanel.updateCurrent({
     dictionaryId: dictionaryFolder.dictionaryId,
     dictionaryName: dictionaryFolder.dictionaryName,
@@ -723,7 +727,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // an old file-match result as if the CSV folder had been loaded again.
   diagnosticsPanel.updateFolderSummary(undefined);
   output.appendLine(`扩展已激活（${context.extensionMode === vscode.ExtensionMode.Development ? '开发模式' : '安装模式'}）。`);
-  context.subscriptions.push(output, qualityOutput, diagnosticsPanel, codeLensEmitter);
+  context.subscriptions.push(output, qualityOutput, diagnosticsPanel, compatibilityReport, codeLensEmitter);
   context.subscriptions.push(decoration);
 
   function isPathInsideWorkspace(candidate: string, root: string): boolean {
@@ -733,7 +737,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   async function openFunctionInThisWindow(location: WebOpenLocation): Promise<void> {
     const filePath = location.filePath?.trim();
-    const root = workspaceRoot();
+    const root = filePath ? workspaceRoot(vscode.Uri.file(filePath)) : workspaceRoot();
     if (!root || !filePath) {
       return void vscode.window.showWarningMessage('无法定位函数：请先打开对应的 C/C++ 工作区。');
     }
@@ -784,6 +788,318 @@ export function activate(context: vscode.ExtensionContext): void {
       if (webLocationListener === receiveBoundWebLocation) webLocationListener = undefined;
     }
   });
+
+  async function answerSemanticRequest(request: WebSemanticRequest): Promise<void> {
+    const sessionId = backendWindowSessionId;
+    const url = activeBackendUrl;
+    if (!sessionId || !url) return;
+    let response: {
+      status: 'ok' | 'noEvidence' | 'unsupported' | 'notReady' | 'error';
+      result?: unknown;
+      error?: string;
+    };
+    try {
+      if (request.operation !== 'callHierarchy') {
+        response = {
+          status: 'unsupported',
+          error: `当前编辑器连接插件暂不支持语义操作：${request.operation}`
+        };
+      } else {
+        const payload = request.payload && typeof request.payload === 'object'
+          ? request.payload as Record<string, unknown>
+          : {};
+        const filePath = typeof payload.filePath === 'string' ? payload.filePath.trim() : '';
+        const targetUri = filePath ? vscode.Uri.file(filePath) : undefined;
+        const root = workspaceRoot(targetUri);
+        if (!filePath || !root || !isPathInsideWorkspace(filePath, root)) {
+          throw new Error('调用关系请求的目标文件不在当前编辑器工作区内。');
+        }
+        const graph = await buildEditorCallGraph({
+          filePath,
+          line: Number(payload.line ?? 1),
+          column: Number(payload.column ?? 1),
+          documentVersion: payload.documentVersion === undefined ? undefined : Number(payload.documentVersion)
+        });
+        const status = graph.semanticStatus === 'available' ? 'ok'
+          : graph.semanticStatus === 'noEvidence' ? 'noEvidence'
+            : graph.semanticStatus === 'unsupported' ? 'unsupported'
+              : graph.semanticStatus === 'notReady' || graph.semanticStatus === 'timeout' ? 'notReady' : 'error';
+        response = status === 'error' || status === 'unsupported' || status === 'notReady'
+          ? { status, error: graph.statusDetail }
+          : { status, result: graph };
+      }
+    } catch (error) {
+      response = {
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+    try {
+      await fetchJsonAt(url, '/api/web/editor/semantic/respond', {
+        windowSessionId: sessionId,
+        requestId: request.requestId,
+        ...response
+      });
+    } catch (error) {
+      output.appendLine(`返回编辑器语义结果失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const receiveSemanticRequest = (request: WebSemanticRequest) => void answerSemanticRequest(request);
+  webSemanticRequestListener = receiveSemanticRequest;
+  context.subscriptions.push({
+    dispose() {
+      if (webSemanticRequestListener === receiveSemanticRequest) webSemanticRequestListener = undefined;
+    }
+  });
+
+  function compatibilityEnvironment(): CompatibilityReport['environment'] {
+    return {
+      appName: vscode.env.appName,
+      appVersion: vscode.version,
+      appHost: vscode.env.appHost,
+      uriScheme: vscode.env.uriScheme
+    };
+  }
+
+  function semanticCompatibilityItem(
+    id: string,
+    label: string,
+    capability: SemanticCapability,
+    meaning: string,
+    nextStep: string
+  ): CompatibilityItem {
+    const state: CompatibilityItemState = capability.state === 'available' ? 'ready'
+      : capability.state === 'unsupported' ? 'unsupported'
+        : capability.state === 'failed' ? 'error'
+          : capability.state === 'notReady' || capability.state === 'timeout' ? 'waiting' : 'partial';
+    return {
+      id,
+      label,
+      state,
+      short: capability.summary,
+      meaning,
+      observed: capability.detail,
+      nextStep: state === 'ready' ? '不需要设置，可以直接使用。' : nextStep,
+      technical: capability.technical
+    };
+  }
+
+  function waitingCompatibilityReport(): CompatibilityReport {
+    const backendReady = Boolean(activeBackendUrl && backendWindowSessionId && !backendStartupError);
+    const editor = vscode.window.activeTextEditor;
+    const cppReady = Boolean(editor && ['c', 'cpp'].includes(editor.document.languageId));
+    const items: CompatibilityItem[] = [
+      {
+        id: 'backend',
+        label: '后台服务',
+        state: backendReady ? 'ready' : backendStartupError ? 'error' : 'waiting',
+        short: backendReady ? '已经连接' : backendStartupError ? '连接失败' : '正在连接',
+        meaning: '后台负责在网页和当前编辑器窗口之间转发请求。',
+        observed: backendReady
+          ? '连接插件已经获得当前窗口会话，网页可以安全地回到这个窗口。'
+          : backendStartupError?.message ?? '连接插件正在等待本机后台响应。',
+        nextStep: backendReady ? '不需要设置。' : '启动“Code Runtime Analyzer”后台后点击“重新检测”。',
+        technical: backendStartupError?.message
+      },
+      {
+        id: 'project',
+        label: '当前代码文件',
+        state: cppReady ? 'ready' : 'waiting',
+        short: cppReady ? '已经识别' : '等待打开',
+        meaning: '实际的类型和函数能力必须在一个真实 C/C++ 文件中检测。',
+        observed: cppReady ? `当前文件语言为 ${editor?.document.languageId.toUpperCase()}。` : '当前没有激活的 .c 或 .cpp 文件。',
+        nextStep: cppReady ? '不需要设置。' : '请在这个编辑器窗口中打开代码仓，再打开一个 .c 或 .cpp 文件。'
+      },
+      {
+        id: 'navigation', label: '代码定位', state: 'waiting', short: '等待实际测试',
+        meaning: '网页点击函数后，工具能否回到当前窗口的正确代码位置。',
+        observed: '打开 C/C++ 文件后会自动测试。', nextStep: '打开一个包含函数的 C/C++ 文件。'
+      },
+      {
+        id: 'types', label: '字段类型识别', state: 'waiting', short: '等待实际测试',
+        meaning: '历史值只有在编辑器确认字段定义和类型后才会展示。',
+        observed: '打开 C/C++ 文件后会自动测试。', nextStep: '把光标放到一个变量或字段上，然后重新检测。'
+      },
+      {
+        id: 'calls', label: '函数调用关系', state: 'waiting', short: '等待实际测试',
+        meaning: '网页能否查看当前函数的直接调用者和被调用函数。',
+        observed: '打开 C/C++ 文件后会自动测试。', nextStep: '把光标放到函数名或函数体内，然后重新检测。'
+      },
+      {
+        id: 'right-report', label: '详细检测面板', state: 'ready', short: '在代码右边打开',
+        meaning: '即使当前编辑器把树形入口放在左侧，详细解释也会在代码区域右边打开。',
+        observed: '连接插件使用编辑器的相邻编辑区显示详细检测结果，不依赖右侧栏贡献点。',
+        nextStep: '点击“查看详细解释”即可。'
+      }
+    ];
+    return {
+      overall: backendStartupError ? 'error' : 'waiting',
+      headline: backendStartupError ? '当前还不能使用' : cppReady ? '正在检查编辑器能力' : '等待打开 C/C++ 文件',
+      summary: backendStartupError
+        ? '后台连接没有建立。下面已经写明原因和下一步，不需要你判断技术版本。'
+        : cppReady ? '正在用当前文件实际测试代码定位、类型和调用关系。' : '连接插件已经启动；打开真实代码文件后会自动继续。',
+      items,
+      checkedAt: new Date().toISOString(),
+      environment: compatibilityEnvironment()
+    };
+  }
+
+  async function runCompatibilityCheck(showReport = false): Promise<CompatibilityReport> {
+    const generation = ++compatibilityGeneration;
+    const waiting = waitingCompatibilityReport();
+    compatibilityReport.update(waiting);
+    diagnosticsPanel.updateCompatibility(waiting);
+    await Promise.race([
+      backendStartup,
+      new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 8_000))
+    ]);
+    if (backendStartupError) {
+      await Promise.race([
+        beginBackendConnection(false),
+        new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 8_000))
+      ]);
+    }
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !['c', 'cpp'].includes(editor.document.languageId)) {
+      const result = waitingCompatibilityReport();
+      if (generation === compatibilityGeneration) {
+        compatibilityReport.update(result);
+        diagnosticsPanel.updateCompatibility(result);
+        if (showReport) compatibilityReport.show();
+      }
+      return result;
+    }
+    let probe: EditorCapabilityProbe;
+    try {
+      probe = await probeEditorCapabilities(editor.document, editor.selection.active);
+    } catch (error) {
+      const failed: SemanticCapability = {
+        state: 'failed',
+        summary: '检测请求失败',
+        detail: '当前编辑器没有完成代码能力检测。可以复制诊断信息继续排查。',
+        technical: error instanceof Error ? error.message : String(error)
+      };
+      probe = {
+        documentSymbols: failed,
+        definition: failed,
+        typeDefinition: failed,
+        references: failed,
+        callHierarchy: failed,
+        inlayHints: failed
+      };
+    }
+    const backendReady = Boolean(activeBackendUrl && backendWindowSessionId && !backendStartupError);
+    const typeCompatibility: CompatibilityItem = probe.typeDefinition.state === 'available'
+      && probe.definition.state === 'available'
+      && probe.documentSymbols.state === 'available'
+      ? semanticCompatibilityItem(
+          'types', '字段类型识别', probe.typeDefinition,
+          '历史值展示前，工具能否取得字段定义位置和所属类型的明确证据。',
+          '把光标放到一个变量或结构体字段上，再点击“重新检测”。'
+        )
+      : probe.definition.state === 'available' || probe.typeDefinition.state === 'available'
+        ? {
+            id: 'types', label: '字段类型识别', state: 'partial', short: '类型证据还不完整',
+            meaning: '历史值展示前，工具必须同时确认字段定义位置和所属类型。',
+            observed: `定义定位：${probe.definition.detail} 类型定义：${probe.typeDefinition.detail} 代码结构：${probe.documentSymbols.detail} 这三类证据没有同时通过，因此不会把其中一项成功冒充成“类型已确认”。`,
+            nextStep: '把光标放到一个结构体字段或有明确类型的变量上，再点击“重新检测”。',
+            technical: probe.typeDefinition.technical
+          }
+        : semanticCompatibilityItem(
+            'types', '字段类型识别', probe.typeDefinition.state === 'noEvidence' ? probe.definition : probe.typeDefinition,
+            '历史值展示前，工具能否取得字段定义位置和所属类型的明确证据。',
+            '把光标放到一个变量或结构体字段上，再点击“重新检测”。'
+          );
+    const items: CompatibilityItem[] = [
+      {
+        id: 'backend', label: '后台服务', state: backendReady ? 'ready' : 'error',
+        short: backendReady ? '已经连接' : '连接失败',
+        meaning: '后台负责把网页请求准确送回打开网页的这个编辑器窗口。',
+        observed: backendReady ? '已经建立当前窗口专属会话。' : backendStartupError?.message ?? '没有建立窗口会话。',
+        nextStep: backendReady ? '不需要设置。' : '启动本机后台，然后点击“重新检测”。',
+        technical: backendStartupError?.message
+      },
+      {
+        id: 'project', label: '当前代码文件', state: 'ready', short: '已经识别',
+        meaning: '检测必须基于用户当前真正打开的 C/C++ 文件。',
+        observed: `已经在当前编辑器中读取 ${editor.document.languageId.toUpperCase()} 文件，文档版本 ${editor.document.version}。`,
+        nextStep: '不需要设置。'
+      },
+      semanticCompatibilityItem(
+        'navigation', '代码定位', probe.definition,
+        '网页点击一个函数后，能否回到当前编辑器窗口并定位到定义。',
+        '把光标放到一个函数名或变量名上，然后点击“重新检测”。'
+      ),
+      typeCompatibility,
+      semanticCompatibilityItem(
+        'references', '代码引用查询', probe.references,
+        '工具能否询问当前符号在代码中的引用位置。',
+        '把光标放到一个有引用的函数或变量上，再点击“重新检测”。'
+      ),
+      semanticCompatibilityItem(
+        'calls', '函数调用关系', probe.callHierarchy,
+        '网页能否展示当前函数的直接调用者和被调用函数。',
+        '把光标放到函数名或函数体内，等待代码索引完成后重新检测。'
+      ),
+      {
+        id: 'right-report', label: '详细检测面板', state: 'ready', short: '在代码右边打开',
+        meaning: '即使定制编辑器不支持真正的右侧栏，详细解释也不会挤进左侧资源管理器。',
+        observed: '详细报告使用相邻编辑区打开，这是当前编辑器已经提供的稳定能力。',
+        nextStep: '点击“查看详细解释”即可。'
+      }
+    ];
+    const semanticItems = items.filter((item) => ['navigation', 'types', 'references', 'calls'].includes(item.id));
+    const overall: CompatibilityItemState = !backendReady ? 'error'
+      : semanticItems.every((item) => item.state === 'ready') ? 'ready'
+        : semanticItems.some((item) => item.state === 'ready') ? 'partial'
+          : semanticItems.some((item) => item.state === 'error') ? 'error'
+            : semanticItems.some((item) => item.state === 'unsupported') ? 'unsupported' : 'waiting';
+    const result: CompatibilityReport = {
+      overall,
+      headline: overall === 'ready' ? '可以正常使用'
+        : overall === 'partial' ? '可以使用部分功能'
+          : overall === 'error' ? '能力检测失败'
+            : overall === 'unsupported' ? '当前缺少必要代码能力' : '编辑器能力尚未确认',
+      summary: overall === 'ready'
+        ? '后台、代码定位、类型证据和函数调用关系均已通过实际请求检测。'
+        : overall === 'partial'
+          ? '已经有部分能力可用；暂不可用的项目不会阻止其他功能，下面写明了各自原因。'
+          : overall === 'error'
+            ? '后台或编辑器语言能力检测失败。下面保留了真实原因和下一步。'
+            : overall === 'unsupported'
+              ? '当前编辑器明确没有提供必要能力。下面会说明受影响的功能。'
+              : '当前文件没有返回足够证据，可能仍在索引。换一个有定义和调用关系的函数后重新检测。',
+      items,
+      checkedAt: new Date().toISOString(),
+      environment: compatibilityEnvironment()
+    };
+    if (generation === compatibilityGeneration) {
+      compatibilityReport.update(result);
+      diagnosticsPanel.updateCompatibility(result);
+      output.appendLine(`编辑器兼容性检测：${result.headline}。`);
+      if (showReport) compatibilityReport.show();
+    }
+    return result;
+  }
+
+  function scheduleCompatibilityCheck(delayMs = 500): void {
+    if (compatibilityTimer) clearTimeout(compatibilityTimer);
+    compatibilityTimer = setTimeout(() => { void runCompatibilityCheck(false); }, delayMs);
+  }
+
+  context.subscriptions.push(vscode.commands.registerCommand('cppCsvDiagnostics.runCompatibilityCheck', async () => {
+    await runCompatibilityCheck(true);
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('cppCsvDiagnostics.showCompatibilityReport', async () => {
+    if (!compatibilityReport.current()) await runCompatibilityCheck(false);
+    compatibilityReport.show();
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand('cppCsvDiagnostics.copyCompatibilityReport', async () => {
+    if (!compatibilityReport.current()) await runCompatibilityCheck(false);
+    await compatibilityReport.copy();
+    void vscode.window.showInformationMessage('兼容性诊断信息已经复制。默认不包含源码、CSV、字典内容或完整业务路径。');
+  }));
 
   function clearRenderedEvidence(): void {
     activeRefreshController?.abort();
@@ -854,26 +1170,6 @@ export function activate(context: vscode.ExtensionContext): void {
     for (const [key, entry] of structuralIndexCache) {
       if (entry.documentUri === documentUri) structuralIndexCache.delete(key);
     }
-  }
-
-  function targetHintsFor(mappedFields: MappedField[]): { members: string[]; globals: string[] } {
-    const members = new Set<string>();
-    const globals = new Set<string>();
-    for (const mapped of mappedFields) {
-      if (isGlobalCodeField(mapped.codeField)) {
-        const symbol = globalSymbol(mapped.codeField).split('::').at(-1);
-        if (symbol) globals.add(symbol);
-      } else {
-        const fieldName = structTarget(mapped.codeField).fieldName;
-        if (fieldName) members.add(fieldName);
-      }
-    }
-    return { members: [...members].sort(), globals: [...globals].sort() };
-  }
-
-  async function compileCommandsFingerprint(filePath: string): Promise<string> {
-    const info = await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
-    return `${filePath}\u0000${info.size}\u0000${info.mtime}`;
   }
 
   async function saveDictionaryFolderState(): Promise<void> {
@@ -1130,28 +1426,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('cppCsvDiagnostics.openWebWorkbench', async () => {
     const editor = vscode.window.activeTextEditor;
-    const root = workspaceRoot();
+    const root = workspaceRoot(editor?.document.uri);
     if (!root || !editor || !['c', 'cpp'].includes(editor.document.languageId)) {
-      return void vscode.window.showWarningMessage('请先打开一个已保存的 C/C++ 源文件，再打开网页工作台。');
-    }
-    if (editor.document.isDirty) {
-      return void vscode.window.showWarningMessage('请先保存当前 C/C++ 文件；网页调用链会严格按照磁盘文件和编译数据库分析。');
+      return void vscode.window.showWarningMessage('请先在当前编辑器窗口中打开一个 C/C++ 源文件，再打开网页工作台。');
     }
     try {
       await backendStartup;
+      if (backendStartupError) await beginBackendConnection(false);
       if (backendStartupError) throw backendStartupError;
       if (!activeBackendUrl || !backendWindowSessionId) {
-        return void vscode.window.showWarningMessage('当前后台还没有建立 VS Code 窗口会话，请重新加载窗口后再试。');
-      }
-      const compileCommandsPath = await discoverCompileCommandsPath(context);
-      if (!compileCommandsPath) {
-        return void vscode.window.showWarningMessage('未找到 compile_commands.json，无法确定当前文件的真实编译参数。');
+        return void vscode.window.showWarningMessage('当前后台还没有绑定这个编辑器窗口。请先运行“编辑器兼容性检测”，然后重试。');
       }
       const url = new URL(`${backendUrl()}/workbench/`);
       url.searchParams.set('workspaceRoot', root);
       url.searchParams.set('filePath', editor.document.uri.fsPath);
-      url.searchParams.set('compileCommandsPath', compileCommandsPath);
       url.searchParams.set('focusLine', String(editor.selection.active.line + 1));
+      url.searchParams.set('focusColumn', String(editor.selection.active.character + 1));
+      url.searchParams.set('documentVersion', String(editor.document.version));
       url.searchParams.set('windowSessionId', backendWindowSessionId);
       if (dictionaryFolder.dictionaryId) url.searchParams.set('dictionaryId', dictionaryFolder.dictionaryId);
       if (dictionaryFolder.dictionaryName) url.searchParams.set('dictionaryName', dictionaryFolder.dictionaryName);
@@ -1190,7 +1481,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('cppCsvDiagnostics.selectReplay', async () => {
     if (!selection?.runRecordId) {
-      return void vscode.window.showWarningMessage('请先在右侧面板选择字段字典和 CSV 文件夹。');
+      return void vscode.window.showWarningMessage('请先在“历史诊断”面板选择字段字典和 CSV 文件夹。');
     }
     const activeSelection = selection;
     let requestedTime: string | undefined;
@@ -1338,20 +1629,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!['c', 'cpp'].includes(editor.document.languageId)) return;
     if (!selection?.runRecordId) {
       diagnosticsPanel.updateCurrent({ status: '尚未加载字段字典和 CSV 文件夹', statusKind: 'warning' });
-      return void vscode.window.showWarningMessage('请先在右侧面板选择字段字典和 CSV 文件夹。');
-    }
-    if (editor.document.isDirty) {
-      const key = editor.document.uri.toString();
-      editor.setDecorations(decoration, []);
-      hoverEvidence.delete(key);
-      codeLensSummaries.delete(key);
-      codeLensEmitter.fire();
-      diagnosticsPanel.updateCurrent({
-        status: '代码有未保存修改',
-        statusKind: 'warning',
-        statusDetail: '为避免把磁盘旧位置贴到当前代码，保存后才会重新分析'
-      });
-      return;
+      return void vscode.window.showWarningMessage('请先在“历史诊断”面板选择字段字典和 CSV 文件夹。');
     }
     const activeSelection = selection;
     activeRefreshController?.abort();
@@ -1367,11 +1645,9 @@ export function activate(context: vscode.ExtensionContext): void {
       || selection?.runRecordId !== activeSelection.runRecordId
       || selection?.dataRevision !== activeSelection.dataRevision
       || selection?.requestedTime !== activeSelection.requestedTime;
-    const compileCommands = await discoverCompileCommandsPath(context);
-    if (isStale()) return;
-    if (!compileCommands || !activeSelection.requestedTime) {
-      diagnosticsPanel.updateCurrent({ status: '缺少编译数据库或回放时间', statusKind: 'error' });
-      return void vscode.window.showErrorMessage('未找到或未选择 compile_commands.json，或者尚未选择回放时间。');
+    if (!activeSelection.requestedTime) {
+      diagnosticsPanel.updateCurrent({ status: '尚未选择回放时间', statusKind: 'warning' });
+      return;
     }
     diagnosticsPanel.updateCurrent({
       runRecordId: activeSelection.runRecordId,
@@ -1381,34 +1657,21 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 
     try {
-      const configuredFunctionNames = settings().get<string[]>('functionNames', []);
-      const clangdSetting = settings().get<string>('clangdPath', '').trim();
-      const configuredClangdPath = clangdSetting && !path.isAbsolute(clangdSetting) && workspaceRoot()
-        ? path.resolve(workspaceRoot()!, clangdSetting)
-        : clangdSetting;
       const mappedFields = await cachedMappedFieldsForRun(activeSelection);
       if (isStale()) return;
-      const targetHints = targetHintsFor(mappedFields);
-      const compileFingerprint = await compileCommandsFingerprint(compileCommands);
-      if (isStale()) return;
       const structuralKey = JSON.stringify({
+        analyzer: 'editor-language-service-v1',
         documentUri,
         documentVersion,
-        compileFingerprint,
-        configuredFunctionNames,
-        configuredClangdPath,
-        targetHints
+        mappedFields: mappedFields.map((field) => mappedFieldIdentityKey(field.codeField)).sort()
       });
       let indexedResult = structuralIndexCache.get(structuralKey)?.result;
       const structuralCacheHit = Boolean(indexedResult);
       if (!indexedResult) {
-        indexedResult = await postJson<IndexedResult>('/api/code/index', {
-          compileCommandsPath: compileCommands,
-          filePath: editor.document.uri.fsPath,
-          targetHints,
-          ...(configuredClangdPath ? { clangdPath: configuredClangdPath } : {}),
-          ...(configuredFunctionNames.length > 0 ? { functionNames: configuredFunctionNames } : {})
-        }, refreshController.signal);
+        indexedResult = await indexMappedFieldsWithEditor(editor.document, mappedFields, {
+          signal: refreshController.signal,
+          maxCandidates: 240
+        });
         if (isStale()) return;
         rememberStructuralIndex(structuralKey, documentUri, indexedResult);
       }
@@ -1552,9 +1815,9 @@ export function activate(context: vscode.ExtensionContext): void {
           ? `${dataFieldCount}/${displayedFieldCount} 个字段有数据`
           : '当前文件没有可匹配字段',
         statusKind: displayedFieldCount > 0 && ambiguousFieldCount === 0 ? 'ready' : 'warning',
-        statusDetail: `运行 ${activeSelection.runRecordId}；回放时间 ${activeSelection.requestedTime}；歧义 ${ambiguousFieldCount}；代码结构${structuralCacheHit || indexedResult.performance?.cacheHit ? '已缓存' : `冷分析 ${Math.round(indexedResult.performance?.totalMs ?? 0)}ms`}`
+        statusDetail: `运行 ${activeSelection.runRecordId}；回放时间 ${activeSelection.requestedTime}；歧义 ${ambiguousFieldCount}；编辑器语义${structuralCacheHit ? '已缓存' : `查询 ${Math.round(indexedResult.performance?.totalMs ?? 0)}ms`}`
       });
-      output.appendLine(`刷新成功：${activeSelection.requestedTime}，发现 ${displayedFieldCount} 个映射字段，${dataFieldCount} 个有数据，${ambiguousFieldCount} 个有歧义；代码结构缓存=${structuralCacheHit || indexedResult.performance?.cacheHit === true}。`);
+      output.appendLine(`刷新成功：${activeSelection.requestedTime}，发现 ${displayedFieldCount} 个映射字段，${dataFieldCount} 个有数据，${ambiguousFieldCount} 个有歧义；编辑器语义缓存=${structuralCacheHit}。`);
     } catch (error) {
       if (isStale()) return;
       editor.setDecorations(decoration, []);
@@ -1584,7 +1847,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('cppCsvDiagnostics.refresh', async () => {
     if (!displayEnabled) {
-      return void vscode.window.showInformationMessage('当前未启动展示。请在右侧“历史诊断”面板点击“开始展示”。');
+      return void vscode.window.showInformationMessage('当前未启动展示。请在“历史诊断”面板点击“开始展示”。');
     }
     await refreshVisibleEditors();
   }));
@@ -1620,10 +1883,16 @@ export function activate(context: vscode.ExtensionContext): void {
     if (visibleEditor) {
       visibleEditor.setDecorations(decoration, []);
       diagnosticsPanel.updateCurrent({
-        status: '代码已修改，保存后重新计算',
+        status: '代码已修改，正在等待输入结束后重新确认',
         statusKind: 'warning',
-        statusDetail: '保存文件后会重新计算历史值位置'
+        statusDetail: '在线编辑器语义使用当前未保存内容；停止输入后会自动重新确认，旧结果已经隐藏'
       });
+      if (displayEnabled && selection && !loadingFolder) {
+        if (editorRefreshTimer) clearTimeout(editorRefreshTimer);
+        editorRefreshTimer = setTimeout(() => {
+          void vscode.commands.executeCommand('cppCsvDiagnostics.refresh');
+        }, 650);
+      }
     }
   }));
 
@@ -1646,6 +1915,7 @@ export function activate(context: vscode.ExtensionContext): void {
     activeRefreshController?.abort();
     activeRefreshController = undefined;
     refreshGeneration += 1;
+    scheduleCompatibilityCheck(450);
     if (!displayEnabled || !editor || !selection || loadingFolder || !['c', 'cpp'].includes(editor.document.languageId)) return;
     if (editorRefreshTimer) clearTimeout(editorRefreshTimer);
     editorRefreshTimer = setTimeout(() => {
@@ -1659,10 +1929,20 @@ export function activate(context: vscode.ExtensionContext): void {
     if (displayEnabled && selection && !loadingFolder) {
       void vscode.commands.executeCommand('cppCsvDiagnostics.refresh');
     }
+    scheduleCompatibilityCheck(650);
   }));
+
+  context.subscriptions.push({
+    dispose() {
+      if (editorRefreshTimer) clearTimeout(editorRefreshTimer);
+      if (compatibilityTimer) clearTimeout(compatibilityTimer);
+      compatibilityGeneration += 1;
+    }
+  });
 
   setTimeout(() => {
     void vscode.commands.executeCommand('workbench.view.extension.cppCsvDiagnostics');
+    scheduleCompatibilityCheck(250);
   }, 300);
 }
 

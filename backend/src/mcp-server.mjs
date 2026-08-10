@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -11,7 +13,7 @@ import { API_VERSION, DEFAULT_BACKEND_URL, PRODUCT_VERSION } from './runtime-inf
  * and stale-data protection in one place instead of creating a second, subtly
  * different implementation for AI clients.
  */
-async function connectSharedApi(baseUrl) {
+async function requireSharedApi(baseUrl) {
   let response;
   try {
     response = await fetch(`${baseUrl}/health`);
@@ -22,6 +24,11 @@ async function connectSharedApi(baseUrl) {
   if (!response.ok || health.product !== 'code-runtime-analyzer' || health.apiVersion !== API_VERSION) {
     throw new Error(`后台版本不兼容：需要 API ${API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。请更新统一安装包。`);
   }
+  return health;
+}
+
+async function connectSharedApi(baseUrl) {
+  await requireSharedApi(baseUrl);
   const registration = await postJson(baseUrl, '/api/integrations/register', {
     clientType: 'mcp',
     clientName: process.env.CODE_RUNTIME_ANALYZER_MCP_CLIENT_NAME || 'OpenCode / AI MCP'
@@ -224,6 +231,12 @@ export async function createDiagnosticsMcp({
 }
 
 async function main() {
+  if (process.argv.includes('--check')) {
+    const baseUrl = (process.env.CODE_RUNTIME_ANALYZER_URL || DEFAULT_BACKEND_URL).replace(/\/$/, '');
+    const health = await requireSharedApi(baseUrl);
+    process.stdout.write(`MCP 可以连接后台：${baseUrl}（后台版本 ${health.version ?? '未知'}，API ${health.apiVersion ?? '未知'}）\n`);
+    return;
+  }
   const { mcp, close } = await createDiagnosticsMcp();
   const shutdown = async () => {
     await mcp.close().catch(() => undefined);
