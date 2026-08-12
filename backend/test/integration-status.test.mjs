@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createDiagnosticServer } from '../src/server.mjs';
 
 test('standalone backend reports clients and generates configuration for the separately installed MCP', async (t) => {
   const accessToken = 'local-test-access-token';
-  const server = createDiagnosticServer({ accessToken });
+  const webDirectory = await mkdtemp(join(tmpdir(), 'code-runtime-analyzer-web-'));
+  await writeFile(join(webDirectory, 'index.html'), '<!doctype html><title>Test workbench</title>', 'utf8');
+  const server = createDiagnosticServer({ accessToken, webDirectory });
   await new Promise((resolvePromise, rejectPromise) => {
     server.once('error', rejectPromise);
     server.listen(0, '127.0.0.1', resolvePromise);
   });
   t.after(() => new Promise((resolvePromise) => server.close(resolvePromise)));
+  t.after(() => rm(webDirectory, { recursive: true, force: true }));
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
