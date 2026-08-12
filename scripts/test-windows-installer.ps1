@@ -29,7 +29,11 @@ function Get-EditorExtensionSnapshot {
 }
 
 function Invoke-Installer([string]$filePath) {
-  $process = Start-Process -FilePath $filePath -ArgumentList @('/S', "/D=$installRoot") -Wait -PassThru
+  $process = Start-Process -FilePath $filePath -ArgumentList @('/S', "/D=$installRoot") -PassThru
+  # Start-Process -Wait also waits for descendants on Windows. The installer
+  # deliberately starts the long-running backend, so wait only for the NSIS
+  # installer process itself to exit.
+  $process.WaitForExit()
   if ($process.ExitCode -ne 0) { throw "EXE 静默安装失败，退出码 $($process.ExitCode)" }
 }
 
