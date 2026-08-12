@@ -10,8 +10,8 @@
 
 1. `Code-Runtime-Analyzer-Setup-v*.exe`：只安装独立后台、后台控制中心和 Web 工作台；
 2. 两个二选一的 `.vsix`：单独安装到你实际使用的编辑器，包括兼容 VS Code 扩展接口的公司定制版编辑器；
-   - `Code-Runtime-Analyzer-默认右侧栏-v*.vsix`：优先安装，功能面板位于编辑器右侧栏；
-   - `Code-Runtime-Analyzer-兼容布局-v*.vsix`：默认版被拒绝安装，或重新加载后仍找不到“历史诊断”时再用；扩展自身功能相同，但入口可能在左侧，代码能力以自动检测结果为准。
+   - `Code-Runtime-Analyzer-VSCode-Right-Sidebar-v*.vsix`：优先安装，功能面板位于编辑器右侧栏；
+   - `Code-Runtime-Analyzer-VSCode-Compatible-v*.vsix`：默认版被拒绝安装，或重新加载后仍找不到“历史诊断”时再用；扩展自身功能相同，但入口可能在左侧，代码能力以自动检测结果为准。
 3. `Code-Runtime-Analyzer-MCP-v*.tgz`：需要 OpenCode / AI 时，由用户或 AI 单独安装到对应环境。
 
 安装程序会一起安装：

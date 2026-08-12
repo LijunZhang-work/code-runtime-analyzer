@@ -9,8 +9,8 @@
 
 EXE 只安装独立后台、后台控制中心和 Web，不会自动安装扩展或 MCP。普通用户请从 [GitHub Releases](https://github.com/LijunZhang-work/code-runtime-analyzer/releases/latest) 下载同一版本的 EXE，并在实际使用的编辑器中单独安装一个 VSIX：
 
-- `Code-Runtime-Analyzer-默认右侧栏-v*.vsix`：优先安装；
-- `Code-Runtime-Analyzer-兼容布局-v*.vsix`：默认版被拒绝安装，或重新加载后仍找不到“历史诊断”时使用；入口可能在左侧活动栏。
+- `Code-Runtime-Analyzer-VSCode-Right-Sidebar-v*.vsix`：优先安装；
+- `Code-Runtime-Analyzer-VSCode-Compatible-v*.vsix`：默认版被拒绝安装，或重新加载后仍找不到“历史诊断”时使用；入口可能在左侧活动栏。
 
 两个 VSIX 的扩展源码和自身功能相同、扩展 ID 相同，只安装一个。编辑器实际能提供多少类型和调用关系能力，以安装后的自动检测为准。普通用户不需要 Node.js 或 npm。
 

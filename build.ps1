@@ -112,9 +112,11 @@ if ([int]($nodeVersion.Split('.')[0]) -lt 20) { throw "Node.js $nodeVersion is t
 New-Item -ItemType Directory -Path $distributionDirectory -Force | Out-Null
 Write-Host "Code Runtime Analyzer $version - local build: $targetName" -ForegroundColor Green
 
-$defaultVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-默认右侧栏-v$version.vsix"
-$compatibleVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-兼容布局-v$version.vsix"
+$defaultVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-VSCode-Right-Sidebar-v$version.vsix"
+$compatibleVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-VSCode-Compatible-v$version.vsix"
 $legacyVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-v$version.vsix"
+$previousDefaultVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-默认右侧栏-v$version.vsix"
+$previousCompatibleVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-兼容布局-v$version.vsix"
 $exeOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-Setup-v$version.exe"
 $mcpOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-MCP-v$version.tgz"
 
@@ -122,7 +124,7 @@ $mcpOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-MCP-v$versi
 # no longer a valid choice now that layout compatibility is explicit, so do not
 # let it appear beside the two current packages or enter the checksum file.
 if ($buildExtension) {
-  foreach ($oldOutput in @($defaultVsixOutput, $compatibleVsixOutput, $legacyVsixOutput)) {
+  foreach ($oldOutput in @($defaultVsixOutput, $compatibleVsixOutput, $legacyVsixOutput, $previousDefaultVsixOutput, $previousCompatibleVsixOutput)) {
     if (Test-Path -LiteralPath $oldOutput) { Remove-Item -LiteralPath $oldOutput -Force }
   }
 }

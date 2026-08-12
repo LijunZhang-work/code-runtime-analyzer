@@ -99,12 +99,18 @@ jobs:
           .\scripts\test-windows-installer.ps1 -InstallerExe "dist\Code-Runtime-Analyzer-Setup-${{ github.ref_name }}.exe" -ExpectedVersion $expectedVersion
 
       - name: 创建 GitHub Release 并上传完整安装包
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            dist/Code-Runtime-Analyzer-Setup-${{ github.ref_name }}.exe
-            dist/Code-Runtime-Analyzer-默认右侧栏-${{ github.ref_name }}.vsix
-            dist/Code-Runtime-Analyzer-兼容布局-${{ github.ref_name }}.vsix
-            dist/Code-Runtime-Analyzer-MCP-${{ github.ref_name }}.tgz
-            dist/SHA256SUMS.txt
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = @(
+            'dist/Code-Runtime-Analyzer-Setup-${{ github.ref_name }}.exe',
+            'dist/Code-Runtime-Analyzer-VSCode-Right-Sidebar-${{ github.ref_name }}.vsix',
+            'dist/Code-Runtime-Analyzer-VSCode-Compatible-${{ github.ref_name }}.vsix',
+            'dist/Code-Runtime-Analyzer-MCP-${{ github.ref_name }}.tgz',
+            'dist/SHA256SUMS.txt'
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file)) { throw "待发布文件不存在：$file" }
+          }
+          gh release create '${{ github.ref_name }}' @files --repo $env:GITHUB_REPOSITORY --title '${{ github.ref_name }}' --generate-notes --verify-tag

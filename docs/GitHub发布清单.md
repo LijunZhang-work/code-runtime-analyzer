@@ -43,7 +43,7 @@ GitHub Actions 会自动完成下面八件事：
 
 1. 安装构建依赖、构建网页和扩展；
 2. 生成 `Code-Runtime-Analyzer-Setup-v0.10.2.exe`，其中只包含独立后台、后台控制中心、Web 和运行时，不包含 MCP，不查找也不修改任何编辑器；
-3. 从同一份源码生成 `Code-Runtime-Analyzer-默认右侧栏-v0.10.2.vsix` 和 `Code-Runtime-Analyzer-兼容布局-v0.10.2.vsix`；用户只安装其中一个；
+3. 从同一份源码生成 `Code-Runtime-Analyzer-VSCode-Right-Sidebar-v0.10.2.vsix` 和 `Code-Runtime-Analyzer-VSCode-Compatible-v0.10.2.vsix`；用户只安装其中一个；发布文件名使用纯英文，避免 GitHub 和不同系统处理中文文件名时发生冲突；
 4. 单独生成 `Code-Runtime-Analyzer-MCP-v0.10.2.tgz`，供用户或 AI 安装到 OpenCode 所在环境；
 5. 生成 `SHA256SUMS.txt`，方便核对下载文件没有损坏或被替换；
 6. 在一次性的 Windows 虚拟机中实际安装 EXE，确认后台健康、诊断导出、重复安装和卸载正常，并确认编辑器扩展目录完全没有变化；

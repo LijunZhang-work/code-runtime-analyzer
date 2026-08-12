@@ -66,9 +66,10 @@ async function createPackage(layout, canonicalManifest, outputDirectory, tempora
   await writeFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`, 'utf8');
 
   const layoutLabel = layout === 'default' ? '默认右侧栏' : '兼容布局';
+  const fileLabel = layout === 'default' ? 'VSCode-Right-Sidebar' : 'VSCode-Compatible';
   const outputFile = resolve(
     outputDirectory,
-    `Code-Runtime-Analyzer-${layoutLabel}-v${manifest.version}.vsix`
+    `Code-Runtime-Analyzer-${fileLabel}-v${manifest.version}.vsix`
   );
   const vsceEntry = resolve(extensionRoot, 'node_modules', '@vscode', 'vsce', 'vsce');
   await run(process.execPath, [vsceEntry, 'package', '--no-dependencies', '--out', outputFile], stagingDirectory);
