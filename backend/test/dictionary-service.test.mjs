@@ -190,7 +190,7 @@ test('dictionary HTTP endpoints list and load without using the default port', a
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
   assert.equal(health.product, 'code-runtime-analyzer');
-  assert.equal(health.version, '0.10.0');
+  assert.equal(health.version, '0.10.2');
   assert.equal(health.apiVersion, '0.10');
   assert.equal(health.runtimeMode, 'standalone');
   assert.ok(health.capabilities.includes('mcp-shared-core'));

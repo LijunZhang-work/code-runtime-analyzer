@@ -33,9 +33,7 @@ for (const fileName of ['工具使用指南.md', '字段字典填写说明.md', 
   await cp(resolve(repositoryRoot, 'docs', fileName), resolve(distributionRoot, 'docs', fileName));
 }
 await cp(resolve(repositoryRoot, 'README.md'), resolve(distributionRoot, 'README.md'));
-await cp(resolve(repositoryRoot, 'installer', 'assets', 'launcher.vbs'), resolve(distributionRoot, 'launcher.vbs'));
-const backendControlSource = await readFile(resolve(repositoryRoot, 'installer', 'assets', 'backend-control.vbs'), 'utf8');
-await writeFile(resolve(distributionRoot, 'backend-control.vbs'), `\uFEFF${backendControlSource}`, 'utf16le');
+await cp(resolve(repositoryRoot, 'build', 'controller', 'backend-control.exe'), resolve(distributionRoot, 'backend-control.exe'));
 
 await writeFile(resolve(distributionRoot, 'distribution.json'), `${JSON.stringify({
   product: 'code-runtime-analyzer',

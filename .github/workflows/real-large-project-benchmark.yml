@@ -1,0 +1,85 @@
+name: 真实大型 C++ 项目性能测试
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 18 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  opencv:
+    name: OpenCV 当前文件分析性能
+    runs-on: windows-latest
+    steps:
+      - name: 取出本工具源码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 下载固定版本的真实大型 C++ 项目
+        shell: pwsh
+        run: git clone --depth 1 --branch 4.13.0 https://github.com/opencv/opencv.git "${{ runner.temp }}\opencv"
+
+      - name: 生成 OpenCV 的真实编译数据库
+        shell: pwsh
+        run: |
+          cmake -S "${{ runner.temp }}\opencv" -B "${{ runner.temp }}\opencv-build" -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
+            -DBUILD_LIST=core `
+            -DBUILD_TESTS=OFF `
+            -DBUILD_PERF_TESTS=OFF `
+            -DBUILD_EXAMPLES=OFF `
+            -DBUILD_opencv_apps=OFF `
+            -DBUILD_JAVA=OFF `
+            -DBUILD_opencv_python3=OFF
+
+      - name: 准备固定版本的 clangd
+        shell: pwsh
+        run: |
+          $archive = Join-Path '${{ runner.temp }}' 'llvm-mingw-20260519-ucrt-x86_64.zip'
+          $destination = Join-Path '${{ runner.temp }}' 'llvm-mingw-20260519'
+          Invoke-WebRequest -Uri 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-x86_64.zip' -OutFile $archive
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          $expectedHash = '72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9'
+          if ($actualHash -ne $expectedHash) { throw "LLVM-MinGW 下载文件校验失败：$actualHash" }
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+          $clangd = Get-ChildItem -LiteralPath $destination -Recurse -Filter 'clangd.exe' | Select-Object -First 1
+          if (-not $clangd) { throw '固定工具链中没有 clangd.exe' }
+          "CLANGD_TEST_PATH=$($clangd.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: 找到测试文件和 clangd
+        shell: pwsh
+        run: |
+          $entry = (Get-Content -LiteralPath "${{ runner.temp }}\opencv-build\compile_commands.json" -Raw | ConvertFrom-Json) |
+            Where-Object { $_.file -match '[\\/]modules[\\/]core[\\/]src[\\/]algorithm\.cpp$' } |
+            Select-Object -First 1
+          if (-not $entry) { throw 'OpenCV 编译数据库里没有 algorithm.cpp' }
+          "OPENCV_CURRENT_FILE=$($entry.file)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: 只分析当前文件并检查速度、内存和缓存范围
+        shell: pwsh
+        run: |
+          node scripts/benchmark-existing-project.mjs `
+            --project "${{ runner.temp }}\opencv" `
+            --compile-commands "${{ runner.temp }}\opencv-build\compile_commands.json" `
+            --file "$env:OPENCV_CURRENT_FILE" `
+            --function "save" `
+            --clangd "$env:CLANGD_TEST_PATH" `
+            --max-cold-ms 30000 `
+            --max-warm-ms 1000 `
+            --max-memory-mb 1200 `
+            --report "build\opencv-performance.json"
+
+      - name: 保存性能报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencv-performance-report
+          path: build/opencv-performance.json
+          if-no-files-found: warn

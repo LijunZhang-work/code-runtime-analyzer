@@ -212,6 +212,7 @@ let dictionaryFolder: DictionaryFolderState = {};
 let embeddedBackend: Worker | undefined;
 let embeddedBackendUrl: string | undefined;
 let activeBackendUrl: string | undefined;
+let activeBackendAccessToken: string | undefined;
 let backendWindowSessionId: string | undefined;
 let backendConnectionMode: 'standalone' | 'embedded' | undefined;
 let standaloneSessionAbort: AbortController | undefined;
@@ -219,6 +220,7 @@ let webLocationListener: ((location: WebOpenLocation) => void) | undefined;
 let webSemanticRequestListener: ((request: WebSemanticRequest) => void) | undefined;
 let backendStartup: Promise<void> = Promise.resolve();
 let backendStartupError: Error | undefined;
+let retryBackendConnection: (() => Promise<void>) | undefined;
 const REPLAY_STATE_KEY = 'replaySelection';
 const DICTIONARY_FOLDER_STATE_KEY = 'dictionaryFolderSelection';
 const DEFAULT_BACKEND_URL = 'http://127.0.0.1:47831';
@@ -254,33 +256,111 @@ class BackendRequestError extends Error {
 
 async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   await backendStartup;
+  if (backendStartupError && retryBackendConnection) await retryBackendConnection();
   if (backendStartupError) throw backendStartupError;
   return fetchJsonAt<T>(backendUrl(), path, body, signal);
 }
 
 async function fetchJsonAt<T>(url: string, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const accessToken = url === activeBackendUrl ? activeBackendAccessToken : undefined;
   const response = await fetch(`${url}${path}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(accessToken ? { 'x-code-runtime-analyzer-token': accessToken } : {})
+    },
+    body: JSON.stringify(body),
+    signal
   });
-  const result = await response.json() as T & { error?: string };
-  if (!response.ok) throw new BackendRequestError(result.error ?? `后端请求失败：${response.status}`, result);
+  const result = await response.json() as T & { error?: string; message?: string };
+  if (!response.ok) throw new BackendRequestError(result.message ?? result.error ?? `后端请求失败：${response.status}`, { ...result, httpStatus: response.status });
   return result;
 }
 
 type BackendHealth = { product?: string; apiVersion?: string; version?: string; runtimeMode?: string };
+type BackendHealthProbe = {
+  health?: BackendHealth;
+  issue?: 'timeout' | 'unreachable' | 'http-error' | 'invalid-response';
+  detail?: string;
+  code?: string;
+  httpStatus?: number;
+};
 
-async function backendHealth(url: string, timeoutMs = 1000): Promise<BackendHealth | undefined> {
+async function probeBackendHealth(url: string, timeoutMs = 1000, accessToken?: string): Promise<BackendHealthProbe> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${url}/health`, { signal: controller.signal });
-    if (!response.ok) return undefined;
-    return await response.json() as BackendHealth;
-  } catch {
-    return undefined;
+    const response = await fetch(`${url}/health`, {
+      signal: controller.signal,
+      headers: accessToken ? { 'x-code-runtime-analyzer-token': accessToken } : undefined
+    });
+    const text = await response.text();
+    if (!response.ok) return { issue: 'http-error', httpStatus: response.status, detail: text.slice(0, 500) };
+    try {
+      return { health: JSON.parse(text) as BackendHealth };
+    } catch {
+      return { issue: 'invalid-response', detail: text.slice(0, 500) };
+    }
+  } catch (error) {
+    const code = (error as Error & { cause?: { code?: string }; code?: string }).cause?.code
+      ?? (error as Error & { code?: string }).code;
+    return {
+      issue: error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'unreachable',
+      detail: error instanceof Error ? error.message : String(error),
+      code
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function backendHealth(url: string, timeoutMs = 1000, accessToken?: string): Promise<BackendHealth | undefined> {
+  return (await probeBackendHealth(url, timeoutMs, accessToken)).health;
+}
+
+type StandaloneConnection = { baseUrl: string; accessToken?: string };
+
+async function standaloneConnection(): Promise<StandaloneConnection | undefined> {
+  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return undefined;
+  try {
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path.join(
+      process.env.LOCALAPPDATA, 'CodeRuntimeAnalyzer', 'service-state.json'
+    )));
+    const state = JSON.parse(new TextDecoder().decode(bytes)) as { baseUrl?: unknown; port?: unknown; accessToken?: unknown };
+    if (typeof state.baseUrl !== 'string') return undefined;
+    const url = new URL(state.baseUrl);
+    if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname)) return undefined;
+    if (Number(url.port) !== Number(state.port)) return undefined;
+    return {
+      baseUrl: url.origin,
+      accessToken: typeof state.accessToken === 'string' && state.accessToken ? state.accessToken : undefined
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function standaloneBackendInstalled(): Promise<boolean> {
+  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return false;
+  return fileExists(path.join(
+    process.env.LOCALAPPDATA,
+    'Programs',
+    'CodeRuntimeAnalyzer',
+    'backend',
+    'src',
+    'launcher.mjs'
+  ));
+}
+
+function standaloneConnectionMessage(url: string, probe: BackendHealthProbe, installed: boolean): string {
+  if (!installed && isDefaultBackendUrl(url)) {
+    return '这台电脑没有检测到独立后台。普通用户把后台模式改为“自动”即可；需要 Web 或 OpenCode 时，请单独安装同一版本的后台 EXE。';
+  }
+  if (probe.issue === 'timeout') return `独立后台 ${url} 连接超时。可能被安全软件拦截，请在后台控制中心导出诊断报告。`;
+  if (probe.issue === 'http-error' && probe.httpStatus === 401) return '已经找到独立后台，但当前用户保存的本机访问密钥已经失效。请在后台控制中心点击“重新启动”，然后在扩展中重新检测。';
+  if (probe.issue === 'http-error') return `地址 ${url} 返回 HTTP ${probe.httpStatus ?? '错误'}，不是可用的后台健康接口。`;
+  if (probe.issue === 'invalid-response') return `端口 ${url} 有响应，但内容不是 Code Runtime Analyzer 后台；可能被其他程序占用。`;
+  return `独立后台已经安装，但 ${url} 当前没有响应${probe.code ? `（${probe.code}）` : ''}。请从开始菜单打开后台控制中心并选择“启动后台”或“导出诊断报告”。`;
 }
 
 function compatibleBackend(health: BackendHealth | undefined): boolean {
@@ -343,6 +423,7 @@ async function startEmbeddedBackend(context: vscode.ExtensionContext): Promise<v
     backendWindowSessionId = undefined;
     backendConnectionMode = undefined;
     activeBackendUrl = undefined;
+    activeBackendAccessToken = undefined;
     await worker.terminate();
     throw error;
   }
@@ -352,35 +433,46 @@ async function closeStandaloneSession(): Promise<void> {
   const controller = standaloneSessionAbort;
   const sessionId = backendWindowSessionId;
   const url = activeBackendUrl;
+  const accessToken = activeBackendAccessToken;
   standaloneSessionAbort = undefined;
   controller?.abort();
   if (url && sessionId) {
+    activeBackendAccessToken = accessToken;
     await fetchJsonAt(url, '/api/web/sessions/unregister', { windowSessionId: sessionId }).catch(() => undefined);
   }
   activeBackendUrl = undefined;
+  activeBackendAccessToken = undefined;
   backendWindowSessionId = undefined;
   backendConnectionMode = undefined;
 }
 
-async function connectBackendSession(url: string, mode: 'standalone' | 'embedded'): Promise<void> {
+async function connectBackendSession(url: string, mode: 'standalone' | 'embedded', accessToken?: string): Promise<void> {
   await closeStandaloneSession();
-  const registered = await fetchJsonAt<{ windowSessionId: string }>(url, '/api/web/sessions/register', {
-    clientName: '编辑器连接插件',
-    workspaceRoot: workspaceRoot(),
-    capabilities: {
-      semanticBridge: true,
-      operations: ['callHierarchy'],
-      revealLocation: true,
-      lineDecorations: true
-    },
-    environment: {
-      appName: vscode.env.appName,
-      appVersion: vscode.version,
-      appHost: vscode.env.appHost,
-      uriScheme: vscode.env.uriScheme
-    }
-  });
   activeBackendUrl = url;
+  activeBackendAccessToken = accessToken;
+  let registered: { windowSessionId: string };
+  try {
+    registered = await fetchJsonAt<{ windowSessionId: string }>(url, '/api/web/sessions/register', {
+      clientName: '编辑器连接插件',
+      workspaceRoot: workspaceRoot(),
+      capabilities: {
+        semanticBridge: true,
+        operations: ['callHierarchy'],
+        revealLocation: true,
+        lineDecorations: true
+      },
+      environment: {
+        appName: vscode.env.appName,
+        appVersion: vscode.version,
+        appHost: vscode.env.appHost,
+        uriScheme: vscode.env.uriScheme
+      }
+    });
+  } catch (error) {
+    activeBackendUrl = undefined;
+    activeBackendAccessToken = undefined;
+    throw error;
+  }
   backendWindowSessionId = registered.windowSessionId;
   backendConnectionMode = mode;
   const controller = new AbortController();
@@ -410,6 +502,7 @@ async function connectBackendSession(url: string, mode: 'standalone' | 'embedded
           if (backendWindowSessionId === registered.windowSessionId) {
             backendWindowSessionId = undefined;
             activeBackendUrl = undefined;
+            activeBackendAccessToken = undefined;
             backendConnectionMode = undefined;
             backendStartupError = new Error('后台已经重启或当前窗口会话已失效，请重新检测后自动连接。');
           }
@@ -418,6 +511,16 @@ async function connectBackendSession(url: string, mode: 'standalone' | 'embedded
         }
       } catch (error) {
         if (controller.signal.aborted) break;
+        if (error instanceof BackendRequestError && error.details.httpStatus === 401) {
+          if (backendWindowSessionId === registered.windowSessionId) {
+            backendWindowSessionId = undefined;
+            activeBackendUrl = undefined;
+            activeBackendAccessToken = undefined;
+            backendConnectionMode = undefined;
+            backendStartupError = new Error('后台已经重新启动，本机访问密钥已更新；请重新检测后自动连接。');
+          }
+          break;
+        }
         await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1_000));
       }
     }
@@ -426,18 +529,21 @@ async function connectBackendSession(url: string, mode: 'standalone' | 'embedded
 
 async function ensureBackendAvailable(context: vscode.ExtensionContext): Promise<void> {
   const configuredUrl = settings().get<string>('backendUrl', DEFAULT_BACKEND_URL).replace(/\/$/, '');
-  const mode = settings().get<'auto' | 'standalone' | 'embedded'>('backendMode', 'standalone');
+  const mode = settings().get<'auto' | 'standalone' | 'embedded'>('backendMode', 'auto');
   if (mode !== 'embedded') {
-    const health = await backendHealth(configuredUrl);
+    const discovered = isDefaultBackendUrl(configuredUrl) ? await standaloneConnection() : undefined;
+    const connection = discovered ?? { baseUrl: configuredUrl, accessToken: undefined };
+    const probe = await probeBackendHealth(connection.baseUrl, 1000, connection.accessToken);
+    const health = probe.health;
     if (compatibleBackend(health)) {
-      await connectBackendSession(configuredUrl, 'standalone');
+      await connectBackendSession(connection.baseUrl, 'standalone', connection.accessToken);
       return;
     }
     if (health && !compatibleBackend(health)) {
-      throw new Error(`已找到后台 ${configuredUrl}，但版本不兼容：需要 API ${EXPECTED_BACKEND_API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。`);
+      throw new Error(`已找到后台 ${connection.baseUrl}，但版本不兼容：需要 API ${EXPECTED_BACKEND_API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。`);
     }
     if (mode === 'standalone' || !isDefaultBackendUrl(configuredUrl)) {
-      throw new Error(`无法连接独立后台 ${configuredUrl}。请从 Windows 开始菜单打开“Code Runtime Analyzer → 后台控制中心”，确认后台正在运行。`);
+      throw new Error(standaloneConnectionMessage(connection.baseUrl, probe, await standaloneBackendInstalled()));
     }
   }
   if (embeddedBackendUrl && compatibleBackend(await backendHealth(embeddedBackendUrl))) {
@@ -447,8 +553,8 @@ async function ensureBackendAvailable(context: vscode.ExtensionContext): Promise
     return;
   }
   await startEmbeddedBackend(context);
-  if (!embeddedBackendUrl || !compatibleBackend(await backendHealth(embeddedBackendUrl, 2000))) {
-    throw new Error('扩展已尝试启动本地诊断后端，但健康检查仍未通过。');
+  if (!embeddedBackendUrl || !backendWindowSessionId || activeBackendUrl !== embeddedBackendUrl) {
+    throw new Error('扩展自带后台已经启动，但没有建立当前编辑器窗口的连接。请打开“编辑器兼容性详细解释”查看真实原因。');
   }
 }
 
@@ -458,6 +564,7 @@ async function closeEmbeddedBackend(): Promise<void> {
   embeddedBackendUrl = undefined;
   if (backendConnectionMode === 'embedded') {
     activeBackendUrl = undefined;
+    activeBackendAccessToken = undefined;
     backendWindowSessionId = undefined;
     backendConnectionMode = undefined;
   }
@@ -712,7 +819,8 @@ export function activate(context: vscode.ExtensionContext): void {
     backendStartup = attempt;
     return attempt;
   }
-  backendStartup = beginBackendConnection(true);
+  retryBackendConnection = () => beginBackendConnection(false);
+  backendStartup = beginBackendConnection(false);
   diagnosticsPanel.updateCurrent({
     dictionaryId: dictionaryFolder.dictionaryId,
     dictionaryName: dictionaryFolder.dictionaryName,
@@ -1449,6 +1557,9 @@ export function activate(context: vscode.ExtensionContext): void {
       if (selection?.runRecordId) url.searchParams.set('runRecordId', selection.runRecordId);
       if (selection?.dataRevision) url.searchParams.set('dataRevision', selection.dataRevision);
       if (selection?.requestedTime) url.searchParams.set('requestedTime', selection.requestedTime);
+      if (activeBackendAccessToken) {
+        url.hash = new URLSearchParams({ access_token: activeBackendAccessToken }).toString();
+      }
       await vscode.env.openExternal(vscode.Uri.parse(url.toString()));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1947,6 +2058,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  retryBackendConnection = undefined;
   await closeStandaloneSession();
   await closeEmbeddedBackend();
 }

@@ -2,7 +2,8 @@ param(
   [Parameter(Position = 0)]
   [ValidateSet('all', 'exe', 'extension', 'vsix', 'mcp')]
   [string]$Target = 'all',
-  [switch]$SkipInstall
+  [switch]$SkipInstall,
+  [switch]$RequireSigning
 )
 
 Set-StrictMode -Version Latest
@@ -73,6 +74,35 @@ function Install-PortableNsis {
   return $makeNsis
 }
 
+function Find-Clangxx {
+  if ($env:CLANGXX_PATH -and (Test-Path -LiteralPath $env:CLANGXX_PATH)) { return $env:CLANGXX_PATH }
+  $fromPath = Get-Command 'clang++.exe' -ErrorAction SilentlyContinue
+  if ($fromPath) { return $fromPath.Source }
+  return Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tools') -Recurse -Filter 'clang++.exe' -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Install-PortableLlvmMingw {
+  $curl = Require-Command 'curl.exe' 'Windows 10/11 normally includes curl.'
+  $downloadDirectory = Join-Path $repositoryRoot 'build\downloads'
+  $archive = Join-Path $downloadDirectory 'llvm-mingw-20260519-ucrt-x86_64.zip'
+  $target = Join-Path $repositoryRoot 'tools\llvm-mingw-20260519'
+  $url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-x86_64.zip'
+  $expectedHash = '72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9'
+  New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+  if (-not (Test-Path -LiteralPath $archive)) {
+    Write-Host 'The native control-center compiler was not found. Downloading the pinned portable LLVM-MinGW toolchain...' -ForegroundColor Yellow
+    Invoke-Checked $curl @('-L', '--fail', '--retry', '2', '--max-time', '600', '--output', $archive, $url)
+  }
+  $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+  if ($actualHash -ne $expectedHash) { throw "Portable LLVM-MinGW checksum mismatch: $actualHash" }
+  if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+  Expand-Archive -LiteralPath $archive -DestinationPath $target -Force
+  $compiler = Find-Clangxx
+  if (-not $compiler) { throw 'Portable LLVM-MinGW was extracted, but clang++.exe is missing.' }
+  return $compiler
+}
+
 Set-Location $repositoryRoot
 $env:npm_config_cache = Join-Path $repositoryRoot 'build\npm-cache'
 $node = Require-Command 'node.exe' 'Install Node.js 20 or newer, then run the same command again.'
@@ -82,6 +112,9 @@ if ([int]($nodeVersion.Split('.')[0]) -lt 20) { throw "Node.js $nodeVersion is t
 
 New-Item -ItemType Directory -Path $distributionDirectory -Force | Out-Null
 Write-Host "Code Runtime Analyzer $version - local build: $targetName" -ForegroundColor Green
+if ($RequireSigning -and $buildExe -and -not $env:WINDOWS_CODE_SIGNING_THUMBPRINT) {
+  throw '正式发布要求代码签名，但当前环境没有 WINDOWS_CODE_SIGNING_THUMBPRINT。'
+}
 
 $defaultVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-默认右侧栏-v$version.vsix"
 $compatibleVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-兼容布局-v$version.vsix"
@@ -104,6 +137,9 @@ $makeNsis = if ($buildExe) { Find-MakeNsis } else { $null }
 if ($buildExe -and -not $makeNsis) {
   $makeNsis = Install-PortableNsis
 }
+$clangxx = if ($buildExe) { Find-Clangxx } else { $null }
+if ($buildExe -and -not $clangxx) { $clangxx = Install-PortableLlvmMingw }
+if ($buildExe) { $env:CLANGXX_PATH = $clangxx }
 
 if (-not $SkipInstall) {
   if ($buildExtension) { Invoke-Checked $npm @('--prefix', 'extension', 'ci') }
@@ -117,12 +153,30 @@ if ($buildExe -or $buildExtension) {
 
 if ($buildExtension) {
   Invoke-Checked $npm @('--prefix', 'extension', 'run', 'package:all')
+  & (Join-Path $repositoryRoot 'scripts\verify-vsix-packages.ps1') `
+    -DefaultVsix $defaultVsixOutput `
+    -CompatibleVsix $compatibleVsixOutput `
+    -ExpectedVersion $version
 }
 
 if ($buildExe) {
+  Invoke-Checked $node @('scripts/build-windows-controller.mjs')
+  $signingScript = Join-Path $repositoryRoot 'scripts\sign-windows-artifact.ps1'
+  if ($RequireSigning) {
+    & $signingScript -FilePath (Join-Path $repositoryRoot 'build\controller\backend-control.exe')
+  }
   Invoke-Checked $node @('scripts/prepare-windows-distribution.mjs')
   $sourceRoot = Join-Path $repositoryRoot 'build\distribution\windows'
-  Invoke-Checked $makeNsis @('/INPUTCHARSET', 'UTF8', "/DAPP_VERSION=$version", "/DSOURCE_ROOT=$sourceRoot", "/DOUTPUT_DIR=$distributionDirectory", 'installer\windows\CodeRuntimeAnalyzer.nsi')
+  $nsisArguments = @('/INPUTCHARSET', 'UTF8', "/DAPP_VERSION=$version", "/DSOURCE_ROOT=$sourceRoot", "/DOUTPUT_DIR=$distributionDirectory")
+  if ($RequireSigning) { $nsisArguments += "/DCODE_SIGNING_SCRIPT=$signingScript" }
+  $nsisArguments += 'installer\windows\CodeRuntimeAnalyzer.nsi'
+  Invoke-Checked $makeNsis $nsisArguments
+  if ($RequireSigning) { & $signingScript -FilePath $exeOutput -VerifyOnly }
+  & (Join-Path $repositoryRoot 'scripts\verify-windows-distribution.ps1') `
+    -DistributionRoot $sourceRoot `
+    -InstallerScript (Join-Path $repositoryRoot 'installer\windows\CodeRuntimeAnalyzer.nsi') `
+    -InstallerExe $exeOutput `
+    -ExpectedVersion $version
 }
 
 if ($buildMcp) {

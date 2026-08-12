@@ -299,15 +299,36 @@ function readContext(): WorkbenchContext {
   }
 }
 
+const WORKBENCH_TOKEN_KEY = 'code-runtime-analyzer-access-token'
+
+function workbenchAccessToken(): string | undefined {
+  if (typeof window === 'undefined') return undefined
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const received = fragment.get('access_token') ?? undefined
+  if (received) {
+    try { window.sessionStorage.setItem(WORKBENCH_TOKEN_KEY, received) } catch { /* private browsing may disable storage */ }
+    fragment.delete('access_token')
+    const remaining = fragment.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${remaining ? `#${remaining}` : ''}`)
+    return received
+  }
+  try { return window.sessionStorage.getItem(WORKBENCH_TOKEN_KEY) ?? undefined } catch { return undefined }
+}
+
+const WORKBENCH_ACCESS_TOKEN = workbenchAccessToken()
+
 async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(WORKBENCH_ACCESS_TOKEN ? { 'x-code-runtime-analyzer-token': WORKBENCH_ACCESS_TOKEN } : {}),
+    },
     body: JSON.stringify(body),
     signal,
   })
-  const result = await response.json().catch(() => ({})) as T & { error?: string }
-  if (!response.ok) throw new Error(result.error ?? '请求失败')
+  const result = await response.json().catch(() => ({})) as T & { error?: string; message?: string }
+  if (!response.ok) throw new Error(result.message ?? result.error ?? '请求失败')
   return result
 }
 

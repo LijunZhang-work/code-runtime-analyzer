@@ -1,0 +1,20 @@
+{
+  "small": {
+    "projectFiles": 250,
+    "coldMilliseconds": 12000,
+    "warmMilliseconds": 500,
+    "workingSetMegabytes": 900
+  },
+  "medium": {
+    "projectFiles": 2500,
+    "coldMilliseconds": 15000,
+    "warmMilliseconds": 500,
+    "workingSetMegabytes": 950
+  },
+  "large": {
+    "projectFiles": 10000,
+    "coldMilliseconds": 20000,
+    "warmMilliseconds": 500,
+    "workingSetMegabytes": 1024
+  }
+}

@@ -1,7 +1,7 @@
 {
   "name": "cpp-csv-diagnostics",
   "displayName": "C/C++ Historical Diagnostics",
-  "version": "0.10.0",
+  "version": "0.10.2",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -53,8 +53,8 @@
     "configuration": {
       "title": "C/C++ Historical Diagnostics",
       "properties": {
-        "cppCsvDiagnostics.backendMode": { "type": "string", "enum": ["standalone", "auto", "embedded"], "enumDescriptions": ["只连接 EXE 安装的独立后台，连接失败时明确报错", "优先连接独立后台，未安装时使用扩展内置备用后台", "只使用扩展内置备用后台"], "default": "standalone", "description": "后台连接方式。正式使用请选择独立后台；内置后台只供开发或临时排查。" },
-        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "独立 Code Runtime Analyzer 后台地址。统一安装版保持默认值即可。" }
+        "cppCsvDiagnostics.backendMode": { "type": "string", "enum": ["auto", "standalone", "embedded"], "enumDescriptions": ["优先连接 EXE 安装的独立后台；没有安装或没有启动时自动使用扩展自带后台", "只连接 EXE 安装的独立后台，连接失败时明确报错", "只使用扩展自带后台"], "default": "auto", "description": "后台连接方式。一般用户保持“自动”即可；需要网页、OpenCode 与多个编辑器窗口共享服务时，再安装并启动独立后台。" },
+        "cppCsvDiagnostics.backendUrl": { "type": "string", "default": "http://127.0.0.1:47831", "description": "独立后台的高级地址覆盖项。保持默认时，扩展会读取当前用户的连接记录，自动找到后台实际使用的端口和访问凭据；只有连接其他手动启动的后台时才需要修改。" }
       }
     }
   },

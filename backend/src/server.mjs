@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,23 @@ import { WebSessionBroker } from './web-session-broker.mjs';
 function reply(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
+}
+
+function requestAccessToken(request) {
+  const direct = request.headers['x-code-runtime-analyzer-token'];
+  if (typeof direct === 'string') return direct;
+  const authorization = request.headers.authorization;
+  return typeof authorization === 'string' && authorization.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length)
+    : undefined;
+}
+
+function tokenMatches(actual, expected) {
+  if (!expected) return true;
+  if (typeof actual !== 'string') return false;
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
 const MIME_TYPES = new Map([
@@ -88,7 +106,8 @@ export function createDiagnosticServer({
   webSessionBroker = new WebSessionBroker(),
   integrationRegistry = new IntegrationRegistry(),
   runtimeMode = 'standalone',
-  instanceId = process.env.CODE_RUNTIME_ANALYZER_INSTANCE_ID
+  instanceId = process.env.CODE_RUNTIME_ANALYZER_INSTANCE_ID,
+  accessToken = process.env.CODE_RUNTIME_ANALYZER_ACCESS_TOKEN
 } = {}) {
   const evidenceService = new EvidenceService(csvStore, mappingStore);
   let activeData;
@@ -104,6 +123,14 @@ export function createDiagnosticServer({
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://127.0.0.1');
+      // The HTML shell is public so a browser can load it. Every endpoint that
+      // reads or changes local project data is protected by the per-launch token.
+      if (request.method === 'GET' && (url.pathname === '/workbench' || url.pathname.startsWith('/workbench/'))) {
+        return await serveWorkbench(response, url, webDirectory);
+      }
+      if (!tokenMatches(requestAccessToken(request), accessToken)) {
+        return reply(response, 401, { error: 'unauthorized', message: '缺少或使用了已经失效的本机访问密钥。请从后台控制中心或编辑器重新打开。' });
+      }
       if (request.method === 'GET' && url.pathname === '/health') {
         return reply(response, 200, {
           status: 'ok',
@@ -114,9 +141,6 @@ export function createDiagnosticServer({
           instanceId: instanceId || undefined,
           capabilities: ['history-replay', 'code-analysis', 'web-workbench', 'vscode-session', 'editor-semantic-rpc', 'mcp-shared-core']
         });
-      }
-      if (request.method === 'GET' && (url.pathname === '/workbench' || url.pathname.startsWith('/workbench/'))) {
-        return await serveWorkbench(response, url, webDirectory);
       }
       if (request.method === 'POST' && url.pathname === '/api/web/sessions/register') {
         return reply(response, 201, webSessionBroker.register(await bodyOf(request)));
@@ -252,7 +276,7 @@ export function createDiagnosticServer({
         const baseUrl = address && typeof address !== 'string'
           ? `http://127.0.0.1:${address.port}`
           : DEFAULT_BACKEND_URL;
-        return reply(response, 200, opencodeConfigurations(baseUrl));
+        return reply(response, 200, opencodeConfigurations(baseUrl, accessToken));
       }
       if (request.method === 'POST' && url.pathname === '/api/config/import') {
         const { configPath } = await bodyOf(request);
@@ -396,9 +420,10 @@ export function startDiagnosticServer({
   port = Number(process.env.DIAGNOSTIC_PORT ?? 47831),
   dictionaryDirectory = process.env.CODE_RUNTIME_ANALYZER_DICTIONARY_DIR,
   runtimeMode = 'standalone',
-  instanceId = process.env.CODE_RUNTIME_ANALYZER_INSTANCE_ID
+  instanceId = process.env.CODE_RUNTIME_ANALYZER_INSTANCE_ID,
+  accessToken = process.env.CODE_RUNTIME_ANALYZER_ACCESS_TOKEN
 } = {}) {
-  const server = createDiagnosticServer({ dictionaryDirectory, runtimeMode, instanceId });
+  const server = createDiagnosticServer({ dictionaryDirectory, runtimeMode, instanceId, accessToken });
   server.listen(port, '127.0.0.1', () => console.log(`Diagnostic backend listening at http://127.0.0.1:${port}`));
   return server;
 }

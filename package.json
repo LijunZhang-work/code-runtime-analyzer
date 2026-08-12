@@ -1,6 +1,6 @@
 {
   "name": "code-runtime-analyzer",
-  "version": "0.10.0",
+  "version": "0.10.2",
   "private": true,
   "description": "把代码结构、产品功能模块和历史运行数据关联起来的分析平台",
   "scripts": {
@@ -10,6 +10,7 @@
     "prepare:mcp-package": "node scripts/prepare-mcp-package.mjs",
     "prepare:windows-distribution": "node scripts/prepare-windows-distribution.mjs",
     "prepare:test-fixture": "node scripts/prepare-test-fixture.mjs",
+    "test:performance": "node scripts/performance-benchmark.mjs --gate",
     "test": "npm run prepare:test-fixture && npm --prefix backend test && npm --prefix extension run compile && npm --prefix web run lint && npm --prefix web run build"
   },
   "engines": {

@@ -5,9 +5,6 @@
       "type": "local",
       "command": ["node.exe", "backend/src/mcp-server.mjs"],
       "cwd": ".",
-      "environment": {
-        "CODE_RUNTIME_ANALYZER_URL": "http://127.0.0.1:47831"
-      },
       "enabled": true,
       "timeout": 15000
     }

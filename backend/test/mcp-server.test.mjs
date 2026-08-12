@@ -10,7 +10,8 @@ const testDirectory = dirname(fileURLToPath(import.meta.url));
 const backendDirectory = resolve(testDirectory, '..');
 
 test('MCP exposes the bounded diagnostics tool set over stdio', async (t) => {
-  const backend = createDiagnosticServer();
+  const accessToken = 'mcp-local-access-token';
+  const backend = createDiagnosticServer({ accessToken });
   await new Promise((resolvePromise, rejectPromise) => {
     backend.once('error', rejectPromise);
     backend.listen(0, '127.0.0.1', resolvePromise);
@@ -21,7 +22,11 @@ test('MCP exposes the bounded diagnostics tool set over stdio', async (t) => {
     command: process.execPath,
     args: ['src/mcp-server.mjs'],
     cwd: backendDirectory,
-    env: { ...process.env, CODE_RUNTIME_ANALYZER_URL: baseUrl },
+    env: {
+      ...process.env,
+      CODE_RUNTIME_ANALYZER_URL: baseUrl,
+      CODE_RUNTIME_ANALYZER_TOKEN: accessToken
+    },
     stderr: 'pipe'
   });
   const client = new Client({ name: 'diagnostics-test-client', version: '1.0.0' });
@@ -45,7 +50,9 @@ test('MCP exposes the bounded diagnostics tool set over stdio', async (t) => {
     'diagnostics_load_data',
     'diagnostics_make_vscode_link'
   ]);
-  const status = await fetch(`${baseUrl}/api/integrations/status`, { method: 'POST' }).then((response) => response.json());
+  const status = await fetch(`${baseUrl}/api/integrations/status`, {
+    method: 'POST', headers: { 'x-code-runtime-analyzer-token': accessToken }
+  }).then((response) => response.json());
   assert.equal(status.aiClients.length, 1);
   assert.equal(status.aiClients[0].clientType, 'mcp');
 });

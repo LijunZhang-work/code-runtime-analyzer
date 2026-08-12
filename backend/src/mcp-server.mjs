@@ -2,6 +2,8 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import { API_VERSION, DEFAULT_BACKEND_URL, PRODUCT_VERSION } from './runtime-info.mjs';
 
@@ -13,36 +15,85 @@ import { API_VERSION, DEFAULT_BACKEND_URL, PRODUCT_VERSION } from './runtime-inf
  * and stale-data protection in one place instead of creating a second, subtly
  * different implementation for AI clients.
  */
-async function requireSharedApi(baseUrl) {
+function accessHeaders(accessToken, json = false) {
+  return {
+    ...(json ? { 'content-type': 'application/json' } : {}),
+    ...(accessToken ? { 'x-code-runtime-analyzer-token': accessToken } : {})
+  };
+}
+
+function validLoopbackUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)
+      ? url.origin
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function discoveredConnection() {
+  const environmentUrl = process.env.CODE_RUNTIME_ANALYZER_URL;
+  const environmentToken = process.env.CODE_RUNTIME_ANALYZER_TOKEN || undefined;
+  if (environmentUrl && environmentToken) {
+    return {
+      baseUrl: environmentUrl.replace(/\/$/, ''),
+      accessToken: environmentToken
+    };
+  }
+  const stateDirectory = process.env.CODE_RUNTIME_ANALYZER_STATE_DIR
+    || (process.platform === 'win32' && process.env.LOCALAPPDATA
+      ? resolve(process.env.LOCALAPPDATA, 'CodeRuntimeAnalyzer')
+      : undefined);
+  if (stateDirectory) {
+    try {
+      const state = JSON.parse(await readFile(resolve(stateDirectory, 'service-state.json'), 'utf8'));
+      const baseUrl = validLoopbackUrl(state.baseUrl);
+      if (baseUrl && (!environmentUrl || baseUrl === environmentUrl.replace(/\/$/, ''))) {
+        return { baseUrl, accessToken: typeof state.accessToken === 'string' ? state.accessToken : undefined };
+      }
+    } catch {
+      // The actionable connection error is produced by the health check below.
+    }
+  }
+  return { baseUrl: (environmentUrl || DEFAULT_BACKEND_URL).replace(/\/$/, ''), accessToken: environmentToken };
+}
+
+async function requireSharedApi(baseUrl, accessToken) {
   let response;
   try {
-    response = await fetch(`${baseUrl}/health`);
+    response = await fetch(`${baseUrl}/health`, { headers: accessHeaders(accessToken) });
   } catch (error) {
     throw new Error(`无法连接 Code Runtime Analyzer 后台 ${baseUrl}。请先启动已安装的后台系统。`, { cause: error });
   }
   const health = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    throw new Error('后台已找到，但本机访问密钥缺失或已经失效。请从当前后台网页重新复制 OpenCode 配置；如果 MCP 直接运行在 Windows，请先重启后台再试。');
+  }
   if (!response.ok || health.product !== 'code-runtime-analyzer' || health.apiVersion !== API_VERSION) {
     throw new Error(`后台版本不兼容：需要 API ${API_VERSION}，当前为 ${health.apiVersion ?? '未知'}。请更新统一安装包。`);
   }
   return health;
 }
 
-async function connectSharedApi(baseUrl) {
-  await requireSharedApi(baseUrl);
+async function connectSharedApi(baseUrl, accessToken) {
+  await requireSharedApi(baseUrl, accessToken);
   const registration = await postJson(baseUrl, '/api/integrations/register', {
     clientType: 'mcp',
     clientName: process.env.CODE_RUNTIME_ANALYZER_MCP_CLIENT_NAME || 'OpenCode / AI MCP'
-  });
+  }, accessToken);
   const heartbeatIntervalMs = Math.max(10_000, Number(registration.heartbeatIntervalMs) || 30_000);
   const heartbeat = setInterval(() => {
-    void postJson(baseUrl, '/api/integrations/heartbeat', { clientId: registration.clientId }).catch(() => undefined);
+    void postJson(baseUrl, '/api/integrations/heartbeat', { clientId: registration.clientId }, accessToken).catch(() => undefined);
   }, heartbeatIntervalMs);
   heartbeat.unref();
   return {
     baseUrl,
+    accessToken,
     async close() {
       clearInterval(heartbeat);
-      await postJson(baseUrl, '/api/integrations/unregister', { clientId: registration.clientId }).catch(() => undefined);
+      await postJson(baseUrl, '/api/integrations/unregister', { clientId: registration.clientId }, accessToken).catch(() => undefined);
     }
   };
 }
@@ -61,10 +112,10 @@ function failedTool(error) {
   };
 }
 
-async function postJson(baseUrl, path, body) {
+async function postJson(baseUrl, path, body, accessToken) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: accessHeaders(accessToken, true),
     body: JSON.stringify(body)
   });
   const result = await response.json();
@@ -80,9 +131,14 @@ const revisionInput = {
 };
 
 export async function createDiagnosticsMcp({
-  baseUrl = (process.env.CODE_RUNTIME_ANALYZER_URL || DEFAULT_BACKEND_URL).replace(/\/$/, '')
+  baseUrl,
+  accessToken
 } = {}) {
-  const api = await connectSharedApi(baseUrl);
+  const discovered = baseUrl
+    ? { baseUrl: baseUrl.replace(/\/$/, ''), accessToken }
+    : await discoveredConnection();
+  const api = await connectSharedApi(discovered.baseUrl, discovered.accessToken);
+  const post = (path, body) => postJson(api.baseUrl, path, body, api.accessToken);
   const mcp = new McpServer({ name: 'code-runtime-analyzer', version: PRODUCT_VERSION });
 
   mcp.registerTool('diagnostics_list_dictionaries', {
@@ -90,7 +146,7 @@ export async function createDiagnosticsMcp({
     description: '列出本工具包内可选的字段字典。字典属于产品代码仓，可长期保留。'
   }, async () => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/dictionaries/list', {}));
+      return compactJson(await post('/api/dictionaries/list', {}));
     } catch (error) {
       return failedTool(error);
     }
@@ -106,7 +162,7 @@ export async function createDiagnosticsMcp({
     }
   }, async (input) => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/dictionaries/load-folder', input));
+      return compactJson(await post('/api/dictionaries/load-folder', input));
     } catch (error) {
       return failedTool(error);
     }
@@ -117,7 +173,7 @@ export async function createDiagnosticsMcp({
     description: '列出当前已加载 CSV 会话中的运行记录及来源。'
   }, async () => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/runs/list', {}));
+      return compactJson(await post('/api/runs/list', {}));
     } catch (error) {
       return failedTool(error);
     }
@@ -132,7 +188,7 @@ export async function createDiagnosticsMcp({
     }
   }, async (input) => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/replay/times', input));
+      return compactJson(await post('/api/replay/times', input));
     } catch (error) {
       return failedTool(error);
     }
@@ -150,7 +206,7 @@ export async function createDiagnosticsMcp({
     }
   }, async (input) => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/evidence/snapshot', input));
+      return compactJson(await post('/api/evidence/snapshot', input));
     } catch (error) {
       return failedTool(error);
     }
@@ -166,7 +222,7 @@ export async function createDiagnosticsMcp({
     }
   }, async (input) => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/evidence/series', input));
+      return compactJson(await post('/api/evidence/series', input));
     } catch (error) {
       return failedTool(error);
     }
@@ -182,7 +238,7 @@ export async function createDiagnosticsMcp({
     }
   }, async (input) => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/mappings/fields', input));
+      return compactJson(await post('/api/mappings/fields', input));
     } catch (error) {
       return failedTool(error);
     }
@@ -203,7 +259,7 @@ export async function createDiagnosticsMcp({
     }
   }, async (input) => {
     try {
-      return compactJson(await postJson(api.baseUrl, '/api/web/call-graph', input));
+      return compactJson(await post('/api/web/call-graph', input));
     } catch (error) {
       return failedTool(error);
     }
@@ -232,9 +288,9 @@ export async function createDiagnosticsMcp({
 
 async function main() {
   if (process.argv.includes('--check')) {
-    const baseUrl = (process.env.CODE_RUNTIME_ANALYZER_URL || DEFAULT_BACKEND_URL).replace(/\/$/, '');
-    const health = await requireSharedApi(baseUrl);
-    process.stdout.write(`MCP 可以连接后台：${baseUrl}（后台版本 ${health.version ?? '未知'}，API ${health.apiVersion ?? '未知'}）\n`);
+    const connection = await discoveredConnection();
+    const health = await requireSharedApi(connection.baseUrl, connection.accessToken);
+    process.stdout.write(`MCP 可以连接后台：${connection.baseUrl}（后台版本 ${health.version ?? '未知'}，API ${health.apiVersion ?? '未知'}）\n`);
     return;
   }
   const { mcp, close } = await createDiagnosticsMcp();
