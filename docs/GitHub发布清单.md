@@ -33,31 +33,21 @@
 
 `.gitignore` 是第一道防线，不是保密保证。文件一旦被 Git 跟踪，后来再写进 `.gitignore` 也不会自动从历史中删除。
 
-## 正式代码签名（发布前只设置一次）
-
-Windows 认可的“发布者”不能由项目自己凭空生成，必须使用受信任 CA 签发、包含私钥的 Authenticode 代码签名证书。不要提交 `.pfx`、证书密码或导出的私钥。
-
-在仓库的 `Settings → Secrets and variables → Actions` 中创建两个 Repository Secret：
-
-- `WINDOWS_CODE_SIGNING_PFX_BASE64`：把正式 PFX 文件读取为字节后进行 Base64 编码；
-- `WINDOWS_CODE_SIGNING_PFX_PASSWORD`：PFX 密码。
-
-Release 工作流只在一次性的 Windows Runner 中把 PFX 导入当前用户证书库，随后立即删除临时 PFX。签名使用 SHA-256 和 RFC 3161 时间戳。后台控制中心、卸载程序和最外层安装程序都会签名并再次验证。任何 Secret 缺失、证书过期、用途错误、时间戳失败或签名无效，工作流都会在创建 Release 之前停止，不会退回发布未签名 EXE。
-
 ## 发布给普通用户
 
 正式发布时，在已经检查通过的提交上创建一个版本标签，例如 `v0.10.2`，并把该标签推送到 GitHub。用户可以下载 Release 里的现成包；Release 下载很慢时，也可以下载同一版本源码后本地生成。
 
-GitHub Actions 会自动完成下面九件事：
+当前发布包不做代码签名，所以部分 Windows 电脑可能显示“未知发布者”或 SmartScreen 提示。项目仍然不会提交 `.pfx`、证书密码或私钥。
+
+GitHub Actions 会自动完成下面八件事：
 
 1. 安装构建依赖、构建网页和扩展；
 2. 生成 `Code-Runtime-Analyzer-Setup-v0.10.2.exe`，其中只包含独立后台、后台控制中心、Web 和运行时，不包含 MCP，不查找也不修改任何编辑器；
 3. 从同一份源码生成 `Code-Runtime-Analyzer-默认右侧栏-v0.10.2.vsix` 和 `Code-Runtime-Analyzer-兼容布局-v0.10.2.vsix`；用户只安装其中一个；
 4. 单独生成 `Code-Runtime-Analyzer-MCP-v0.10.2.tgz`，供用户或 AI 安装到 OpenCode 所在环境；
-5. 使用 GitHub Secrets 中的正式证书签名后台控制中心、卸载程序和安装程序，并用 Windows Authenticode 规则复验；
-6. 生成 `SHA256SUMS.txt`，方便核对下载文件没有损坏或被替换；
-7. 在一次性的 Windows 虚拟机中实际安装 EXE，确认后台健康、诊断导出、重复安装和卸载正常，并确认编辑器扩展目录完全没有变化；
-8. 执行 250、2500、10000 个代码文件三档性能门禁，确认代码仓变大时仍只分析和缓存当前文件；固定 OpenCV 真实项目另有每周测试；
-9. 在 GitHub 的 **Releases** 页面创建对应版本，并把四个安装包和校验文件放进去。
+5. 生成 `SHA256SUMS.txt`，方便核对下载文件没有损坏或被替换；
+6. 在一次性的 Windows 虚拟机中实际安装 EXE，确认后台健康、诊断导出、重复安装和卸载正常，并确认编辑器扩展目录完全没有变化；
+7. 执行 250、2500、10000 个代码文件三档性能门禁，确认代码仓变大时仍只分析和缓存当前文件；固定 OpenCV 真实项目另有每周测试；
+8. 在 GitHub 的 **Releases** 页面创建对应版本，并把四个安装包和校验文件放进去。
 
 这样用户可以直接下载四个现成安装包，也可以下载源码后运行 `.\build.ps1 all` 自己生成。所有文件应使用同一个版本号。版本号只在真正要发给用户的新安装包时才增加，不因为日常的小修改频繁变化。

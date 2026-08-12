@@ -70,12 +70,6 @@ try {
   if (@(Get-ChildItem -LiteralPath $installRoot -Recurse -Filter '*.vbs').Count -gt 0) {
     throw '安装目录仍然包含 VBS，后台控制中心没有彻底完成原生化。'
   }
-  foreach ($signedFile in @($nativeController, (Join-Path $installRoot 'Uninstall.exe'))) {
-    $signature = Get-AuthenticodeSignature -LiteralPath $signedFile
-    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
-      throw "安装后的文件没有有效 Authenticode 签名：$signedFile（$($signature.Status)）"
-    }
-  }
 
   $stateFile = Join-Path $stateRoot 'service-state.json'
   if (-not (Test-Path -LiteralPath $stateFile)) { throw '安装后没有生成当前用户的后台连接记录。' }

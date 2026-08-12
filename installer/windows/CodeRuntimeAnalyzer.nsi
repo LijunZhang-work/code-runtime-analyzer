@@ -21,12 +21,6 @@ Unicode true
 
 Name "${PRODUCT_NAME} ${APP_VERSION}"
 OutFile "${OUTPUT_DIR}\Code-Runtime-Analyzer-Setup-v${APP_VERSION}.exe"
-!ifdef CODE_SIGNING_SCRIPT
-  ; NSIS builds the uninstaller inside the installer. Sign it before NSIS packs
-  ; it, then sign the outer installer after compilation.
-  !uninstfinalize 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${CODE_SIGNING_SCRIPT}" -FilePath "%1"'
-  !finalize 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${CODE_SIGNING_SCRIPT}" -FilePath "%1"'
-!endif
 InstallDir "$LOCALAPPDATA\Programs\CodeRuntimeAnalyzer"
 InstallDirRegKey HKCU "Software\${PRODUCT_ID}" "InstallDir"
 RequestExecutionLevel user

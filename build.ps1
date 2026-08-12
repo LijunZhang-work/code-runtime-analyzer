@@ -2,8 +2,7 @@ param(
   [Parameter(Position = 0)]
   [ValidateSet('all', 'exe', 'extension', 'vsix', 'mcp')]
   [string]$Target = 'all',
-  [switch]$SkipInstall,
-  [switch]$RequireSigning
+  [switch]$SkipInstall
 )
 
 Set-StrictMode -Version Latest
@@ -112,9 +111,6 @@ if ([int]($nodeVersion.Split('.')[0]) -lt 20) { throw "Node.js $nodeVersion is t
 
 New-Item -ItemType Directory -Path $distributionDirectory -Force | Out-Null
 Write-Host "Code Runtime Analyzer $version - local build: $targetName" -ForegroundColor Green
-if ($RequireSigning -and $buildExe -and -not $env:WINDOWS_CODE_SIGNING_THUMBPRINT) {
-  throw '正式发布要求代码签名，但当前环境没有 WINDOWS_CODE_SIGNING_THUMBPRINT。'
-}
 
 $defaultVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-默认右侧栏-v$version.vsix"
 $compatibleVsixOutput = Join-Path $distributionDirectory "Code-Runtime-Analyzer-兼容布局-v$version.vsix"
@@ -161,17 +157,9 @@ if ($buildExtension) {
 
 if ($buildExe) {
   Invoke-Checked $node @('scripts/build-windows-controller.mjs')
-  $signingScript = Join-Path $repositoryRoot 'scripts\sign-windows-artifact.ps1'
-  if ($RequireSigning) {
-    & $signingScript -FilePath (Join-Path $repositoryRoot 'build\controller\backend-control.exe')
-  }
   Invoke-Checked $node @('scripts/prepare-windows-distribution.mjs')
   $sourceRoot = Join-Path $repositoryRoot 'build\distribution\windows'
-  $nsisArguments = @('/INPUTCHARSET', 'UTF8', "/DAPP_VERSION=$version", "/DSOURCE_ROOT=$sourceRoot", "/DOUTPUT_DIR=$distributionDirectory")
-  if ($RequireSigning) { $nsisArguments += "/DCODE_SIGNING_SCRIPT=$signingScript" }
-  $nsisArguments += 'installer\windows\CodeRuntimeAnalyzer.nsi'
-  Invoke-Checked $makeNsis $nsisArguments
-  if ($RequireSigning) { & $signingScript -FilePath $exeOutput -VerifyOnly }
+  Invoke-Checked $makeNsis @('/INPUTCHARSET', 'UTF8', "/DAPP_VERSION=$version", "/DSOURCE_ROOT=$sourceRoot", "/DOUTPUT_DIR=$distributionDirectory", 'installer\windows\CodeRuntimeAnalyzer.nsi')
   & (Join-Path $repositoryRoot 'scripts\verify-windows-distribution.ps1') `
     -DistributionRoot $sourceRoot `
     -InstallerScript (Join-Path $repositoryRoot 'installer\windows\CodeRuntimeAnalyzer.nsi') `

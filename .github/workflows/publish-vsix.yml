@@ -88,40 +88,9 @@ jobs:
         shell: pwsh
         run: npm run test:performance
 
-      - name: 从 GitHub Secrets 临时导入正式代码签名证书
+      - name: 使用与源码用户相同的命令生成全部安装包
         shell: pwsh
-        env:
-          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_BASE64 }}
-          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64)) {
-            throw '缺少 WINDOWS_CODE_SIGNING_PFX_BASE64。为避免发布未知发布者安装包，本次 Release 已停止。'
-          }
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD)) {
-            throw '缺少 WINDOWS_CODE_SIGNING_PFX_PASSWORD。证书密码只能存放在 GitHub Actions Secret。'
-          }
-          $pfxPath = Join-Path '${{ runner.temp }}' 'code-signing.pfx'
-          try {
-            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
-            $password = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
-            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation 'Cert:\CurrentUser\My' -Password $password -Exportable:$false
-            if (-not $certificate -or -not $certificate.HasPrivateKey) { throw 'PFX 没有可用的私钥。' }
-            if ($certificate.NotAfter -le (Get-Date)) { throw '代码签名证书已经过期。' }
-            "WINDOWS_CODE_SIGNING_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } finally {
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-          }
-
-      - name: 生成全部安装包并强制执行 Authenticode 签名
-        shell: pwsh
-        run: .\build.ps1 all -SkipInstall -RequireSigning
-
-      - name: 再次验证发布 EXE 的可信签名
-        shell: pwsh
-        run: |
-          $version = '${{ github.ref_name }}'.TrimStart('v')
-          .\scripts\sign-windows-artifact.ps1 -FilePath "dist\Code-Runtime-Analyzer-Setup-v$version.exe" -VerifyOnly
-          .\scripts\sign-windows-artifact.ps1 -FilePath 'build\distribution\windows\backend-control.exe' -VerifyOnly
+        run: .\build.ps1 all -SkipInstall
 
       - name: 在一次性 Windows 环境完整安装并卸载 EXE
         shell: pwsh
